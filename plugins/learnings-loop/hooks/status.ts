@@ -78,6 +78,6 @@ export function formatStatus(d: StatusData): string {
   })
 
   lines.push('')
-  lines.push('コマンド: `/learnings now`（今すぐ抽出）・`/learnings undo [番号]`・`/learnings adopt <番号>`・`/learnings init`')
+  lines.push('コマンド: `/learnings now`（今すぐ抽出）・`/learnings undo [番号]`・`/learnings adopt <番号>`・`/learnings commit`（LEARNINGS.md だけを commit）・`/learnings init`')
   return lines.join('\n')
 }

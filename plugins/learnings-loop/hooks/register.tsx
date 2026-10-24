@@ -8,7 +8,7 @@ import type { EngineInterface, ModelUsage, PluginOptions, Register } from 'claud
 
 import type { Candidate, DropReason } from './candidates'
 import { makeJudge, runExtraction, type ExtractOptions } from './extract'
-import { commonDir, hasChanges, stage } from './git'
+import { commitOnly, commonDir, hasChanges } from './git'
 import {
   countObservations,
   daysBetween,
@@ -41,6 +41,7 @@ const PLUGIN = 'learnings-loop'
 const SECTION_ID = 'learnings-loop:principles'
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
 const FILE_NAME = 'LEARNINGS.md'
+const COMMIT_MESSAGE = 'LEARNINGS.md を更新（learnings-loop）'
 const CONSOLIDATE_PROMPT =
   'learnings-loop:consolidate-learnings スキルを実行して、LEARNINGS.md の生の観察を原則へ統合してください。'
 
@@ -440,23 +441,26 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
     return adoptDiscarded($, n)
   }
 
-  if (verb !== '') return `不明な引数: ${verb}。使えるのは now / undo [n] / adopt <n> / init`
+  if (verb === 'commit') return commitLearnings($)
+
+  if (verb !== '') return `不明な引数: ${verb}。使えるのは now / undo [n] / adopt <n> / commit / init`
   return statusText($)
 }
 
-// ---- commit への同梱 -----------------------------------------------------------
+// ---- commit ---------------------------------------------------------------------
 
-const GIT_COMMIT = /(^|[\s;&|(])git\s+(?:-[cC]\s+\S+\s+)*commit(\s|$)/
-
-/** `git commit` の直前に、LEARNINGS.md の未 commit の追記を index に載せて同じ commit に入れる。 */
-async function stageLearnings($: EngineInterface): Promise<void> {
+// Claude の `git commit` には手を出さない（裏で index を変えると、Claude が見た diff と commit の中身がずれる）。
+// LEARNINGS.md は人が `/learnings commit` を打ったときだけ、それ単独の commit にする。
+async function commitLearnings($: EngineInterface): Promise<string> {
   const s = await read($, sessionAtom)
-  if (s.file === null) return
+  if (s.file === null) return 'LEARNINGS.md がありません。`/learnings init` で作れます。'
+  const run = (argv: readonly string[], init?: { cwd?: string; timeoutMs?: number }) => $.process.run(argv, init)
   const dir = dirOf(s.file)
-  if (!(await hasChanges((argv, init) => $.process.run(argv, init), dir, s.file))) return
-  if (await stage((argv, init) => $.process.run(argv, init), dir, s.file)) {
-    $.ui.log(`staged ${s.file} for the commit`, { to: 'debug' })
+  if (!(await hasChanges(run, dir, s.file))) return `${s.file} に未 commit の変更はありません。`
+  if (!(await commitOnly(run, dir, s.file, COMMIT_MESSAGE))) {
+    return `commit できませんでした。\`git -C ${dir} status\` で状態を確認してください。`
   }
+  return `${s.file} だけを commit しました（「${COMMIT_MESSAGE}」）。他にステージしていたファイルはそのままです。`
 }
 
 // ---- 配線 ---------------------------------------------------------------------
@@ -471,7 +475,7 @@ export const register: Register = (on, rawOptions) => {
     await $.command.register({
       name: 'learnings',
       description: 'learnings-loop の状況・取り消し・今すぐ抽出・LEARNINGS.md の作成',
-      argumentHint: '[now|undo [n]|adopt <n>|init]',
+      argumentHint: '[now|undo [n]|adopt <n>|commit|init]',
     })
 
     await detect($, e.cwd)
@@ -519,7 +523,7 @@ export const register: Register = (on, rawOptions) => {
       '',
       `生の観察 ${observationsAtStart} 件が \`${s.file}\` にある。関係しそうな作業の前に grep して参照せよ。`,
       '学びの記録は learnings-loop が自動で行う。明示的に頼まれない限り、自分で LEARNINGS.md に追記しない。',
-      '`git commit` の直前に learnings-loop が LEARNINGS.md の未 commit の追記を `git add` する。LEARNINGS.md が commit に含まれていても、それは意図どおり。',
+      'LEARNINGS.md の未 commit の変更は learnings-loop の追記。作業の commit には含めない（`git add -A` や `git commit -a` でも入れない）。commit はユーザーが `/learnings commit` で別に行う。',
     ].join('\n')
     return { sections: [...r.sections, { id: SECTION_ID, text, scope: 'session' as const }] }
   })
@@ -547,13 +551,6 @@ export const register: Register = (on, rawOptions) => {
       if (typeof path === 'string' && path.endsWith(`/${FILE_NAME}`)) turn.editedLearnings = true
     }
     return ran
-  })
-
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    if (GIT_COMMIT.test(e.command)) {
-      await stageLearnings($).catch(err => $.ui.log(`stage: ${String(err)}`, { to: 'debug' }))
-    }
-    return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {

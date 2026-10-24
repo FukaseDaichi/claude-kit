@@ -18,6 +18,8 @@
 ## Domain Knowledge
 （業務・仕様・環境の知識）
 
+- 2026-10-24: Mod の prompt.compose フックは、先に動く別プラグイン（例: cc-plugin-sec-default）が next を通さないと飛ばされるので、システムプロンプトへの注入だけで Claude に大事な前提を伝える設計は当てにならない
+
 ## Open Questions
 （未解決の疑問）
 

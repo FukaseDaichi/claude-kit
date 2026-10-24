@@ -268,27 +268,45 @@ test('more than three lines in a session are all written (no session cap)', asyn
   for (const line of ['事実 1-1', '事実 1-2', '事実 2-1', '事実 2-2']) expect(text).toContain(line)
 })
 
-test('git commit stages LEARNINGS.md first, only when it has changes', async ($, on) => {
+test('git commit by Claude never stages LEARNINGS.md', async ($, on) => {
   mock.clock(on)
   mock.store(on)
-  const git: Record<string, string> = { 'rev-parse --abbrev-ref HEAD': 'feature/x', [`add -- ${FILE}`]: '' }
+  const git: Record<string, string> = {
+    'rev-parse --abbrev-ref HEAD': 'feature/x',
+    [`status --porcelain -- ${FILE}`]: ' M LEARNINGS.md',
+    [`add -- ${FILE}`]: '',
+  }
   const w = world(on, { git })
   on('session.turns', () => ({ value: 0 }))
   await $.session.start(ON_MAIN)
-  const ADD = `add -- ${FILE}`
 
-  // 変更なし: add しない
-  await $.tool.call({ tool: 'Bash', command: 'git commit -m "fix"' })
-  expect(w.runs.includes(ADD)).toBe(false)
+  await $.tool.call({ tool: 'Bash', command: 'git add src/a.ts && git commit -m "fix"' })
+  expect(w.runs.includes(`add -- ${FILE}`)).toBe(false)
 
-  // 変更あり: commit 以外のコマンドでは add しない
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  expect(composed.sections.find(s => s.id === 'learnings-loop:principles')?.text).toContain('作業の commit には含めない')
+})
+
+test('/learnings commit commits only LEARNINGS.md, and only when it has changes', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const COMMIT = `commit -m LEARNINGS.md を更新（learnings-loop） -- ${FILE}`
+  const git: Record<string, string> = { 'rev-parse --abbrev-ref HEAD': 'feature/x', [`add -- ${FILE}`]: '', [COMMIT]: '' }
+  const w = world(on, { git })
+  on('session.turns', () => ({ value: 0 }))
+  await $.session.start(ON_MAIN)
+  const run = () => $.command.run({ command: 'learnings', args: 'commit', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+
+  // 変更なし: commit しない
+  expect((await run()).text).toContain('未 commit の変更はありません')
+  expect(w.runs.includes(COMMIT)).toBe(false)
+
+  // 変更あり: add してから、そのファイルだけを commit する
   git[`status --porcelain -- ${FILE}`] = ' M LEARNINGS.md'
-  await $.tool.call({ tool: 'Bash', command: 'git status && git log --oneline -3' })
-  expect(w.runs.includes(ADD)).toBe(false)
-
-  // 変更あり + commit: add してから commit が走る
-  await $.tool.call({ tool: 'Bash', command: 'git add src/a.ts && git -C /repo commit -m "fix"' })
-  expect(w.runs.filter(r => r === ADD).length).toBe(1)
+  expect((await run()).text).toContain('だけを commit しました')
+  const i = w.runs.indexOf(`add -- ${FILE}`)
+  expect(i).toBeGreaterThan(-1)
+  expect(w.runs.indexOf(COMMIT)).toBeGreaterThan(i)
 })
 
 test('a turn where Claude edited LEARNINGS.md itself is not extracted', async ($, on) => {

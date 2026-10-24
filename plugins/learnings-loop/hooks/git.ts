@@ -31,7 +31,12 @@ export async function hasChanges(run: Run, cwd: string, path: string): Promise<b
   return out !== undefined && out !== ''
 }
 
-/** そのファイルを index に載せる。成功したら true。 */
-export async function stage(run: Run, cwd: string, path: string): Promise<boolean> {
-  return (await git(run, cwd, ['add', '--', path])) !== undefined
+/**
+ * そのファイルだけを1つの commit にする。index に載っている他のファイルは載せたまま残す。
+ * 成功したら true。
+ */
+export async function commitOnly(run: Run, cwd: string, path: string, message: string): Promise<boolean> {
+  // 未追跡のファイルは `commit -- <path>` で拾えないので、先に add する
+  if ((await git(run, cwd, ['add', '--', path])) === undefined) return false
+  return (await git(run, cwd, ['commit', '-m', message, '--', path])) !== undefined
 }

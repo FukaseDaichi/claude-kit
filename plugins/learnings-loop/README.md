@@ -37,13 +37,13 @@ claude plugin install learnings-loop@claude-kit --scope user
    - 2段目: 小さいモデル（既定 `haiku`）が、既存の `LEARNINGS.md` と「捨てた候補」に照らして **auto / drop** に振り分ける
 3. `auto` の候補は、**今いるブランチ（worktree ならその worktree）の** `LEARNINGS.md` の該当セクションの末尾に `- YYYY-MM-DD: 本文` を1行足す。件数の上限はない
 4. 帯（入力欄の上）に `📚 今セッション 2件追記（u 取り消し）` と出る。セッション中ずっと出る
-5. Claude が `git commit` を実行する直前に、`LEARNINGS.md` に未 commit の変更があれば `git add` して、作業と同じ commit に入れる
+5. 追記は未 commit のまま作業ツリーに残る。commit したいときに `/learnings commit` を打つと、`LEARNINGS.md` だけを別の commit にする
 
 ## 何が起きないか
 
 - `## Consolidated Principles` と冒頭コメントには書かない
 - `LEARNINGS.md` が5見出しでなければ何もしない。競合マーカーがあれば書かずに保留し、次のセッション開始時に再判定して書く
-- 自分で commit はしない。`git add` するのは Claude の `git commit` の直前だけ
+- Claude の `git commit` には手を出さない（`git add` も commit もしない）。commit するのは `/learnings commit` を打ったときだけ
 - `AGENTS.md` / `CLAUDE.md` / スキルは触らない
 - 人に仕分けを求めない。自動の条件を満たさない候補は捨てる（`/learnings` の一覧から採用し直せる）
 - 調査だけ・ユーザーの訂正だけで終わったターンは自動では拾わない（`/learnings now` で手動）
@@ -51,10 +51,10 @@ claude plugin install learnings-loop@claude-kit --scope user
 
 ## commit との関係
 
-- 学びは作業中のブランチに書かれ、作業の commit と一緒に PR へ入る
-- `git commit` の直前に `LEARNINGS.md` を `git add` するので、手で直した分も含めてそのファイルの変更はすべてその commit に入る
-- commit したターンそのものから出た学びは、ターンの後に抽出されるので次の commit に回る。最後の commit の後に出た学びは、未 commit のまま作業ツリーに残る
-- `git -C <別のリポジトリ> commit` でも、`git add` するのは今のセッションの `LEARNINGS.md` だけ
+- 学びは作業中のブランチの `LEARNINGS.md` に書かれ、未 commit のまま残る。Claude には「作業の commit に入れない」と伝えてある
+- `/learnings commit` で `LEARNINGS.md` だけの commit（メッセージ「LEARNINGS.md を更新（learnings-loop）」）を作る。手で直した分も含めて、そのファイルの変更すべてが入る。他にステージしていたファイルはステージしたまま残る
+- PR に入れたいときは、push の前に `/learnings commit` を打つ
+- 以前は Claude の `git commit` の直前に自動で `git add` していたが、やめた。Claude が見た diff と commit の中身がずれて、Claude が「勝手に入った」と判断して commit を作り直すことがあったため
 
 ## 取り消し方
 
@@ -70,6 +70,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 | `/learnings now` | 今すぐ抽出（きっかけの条件に関係なく、未処理の範囲すべて） |
 | `/learnings undo [n]` | n 番目の追記を取り消す（省略で直近） |
 | `/learnings adopt <n>` | 捨てた候補の n 番目を採用して書く |
+| `/learnings commit` | `LEARNINGS.md` だけを1つの commit にする（他のステージ済みファイルは巻き込まない） |
 | `/learnings init` | 5見出しの `LEARNINGS.md` をテンプレートから作る。見出しが足りないときは `--fix` で末尾に足す |
 
 同梱スキル: `learnings-loop:update-learnings`（手動追記）・`learnings-loop:consolidate-learnings`（統合）。
