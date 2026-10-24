@@ -22,6 +22,10 @@ declare module 'claude-code' {
       status: GitStatus | null
       /** pull 実行中なら true */
       isPulling: boolean
+      /** コミットして push を Claude に依頼し、そのターンが終わるまで true */
+      isShipping: boolean
+      /** push が終わった直後の数秒だけ、push したブランチ名。それ以外は null */
+      pushedBranch: string | null
     }
   }
 }

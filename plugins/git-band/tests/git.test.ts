@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { canPull, canShip, countWorktrees, describe, isNetworkError, parseStatus, pullPrompt } from '../hooks/git'
+import { canPull, canShip, countWorktrees, describe, isNetworkError, isShipPrompt, parseStatus, pullPrompt, shipPrompt } from '../hooks/git'
 
 const STATUS = `# branch.oid 0123
 # branch.head main
@@ -54,4 +54,11 @@ test('pullPrompt carries the output and the policy', () => {
   expect(text).toContain('--rebase --autostash')
   expect(text).toContain('AskUserQuestion')
   expect(text).toContain('push はしない')
+})
+
+test('isShipPrompt finds the ship request, and nothing else', () => {
+  const s = { branch: 'main', upstream: 'origin/main', ahead: 1, behind: 0, changes: 2, worktrees: 1 }
+  expect(isShipPrompt(shipPrompt('/repo', s))).toBe(true)
+  expect(isShipPrompt(pullPrompt('/repo', s, 'fatal'))).toBe(false)
+  expect(isShipPrompt('コミットして push して')).toBe(false)
 })

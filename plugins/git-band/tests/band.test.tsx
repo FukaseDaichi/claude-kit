@@ -13,6 +13,8 @@ type World = {
   calls: string[]
   prompts: string[]
   toasts: string[]
+  /** 鳴らした音（asset のパス） */
+  sounds: string[]
 }
 
 const CLEAN = `# branch.oid 1
@@ -30,7 +32,7 @@ const DIRTY = `# branch.oid 1
 const WORKTREES = 'worktree /repo\nHEAD 1\nbranch refs/heads/main\n'
 
 function world(on: On, git: World['git']): World {
-  const w: World = { git, calls: [], prompts: [], toasts: [] }
+  const w: World = { git, calls: [], prompts: [], toasts: [], sounds: [] }
   on('process.run', (_, e) => {
     const key = e.argv.slice(1).join(' ')
     w.calls.push(key)
@@ -49,6 +51,11 @@ function world(on: On, git: World['git']): World {
     return { value: undefined }
   })
   on('ui.log', () => ({ value: undefined }))
+  on('audio.play', (_, e) => {
+    if (e.clip.asset !== undefined) w.sounds.push(e.clip.asset)
+    return { value: undefined }
+  })
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   return w
@@ -205,5 +212,90 @@ test('the status refreshes on the timer and after a turn', async ($, on) => {
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.advance(0)
   expect(w.calls.filter(c => c.startsWith('status')).length).toBeGreaterThan(before)
+  await ui.unmount()
+})
+
+const PUSH_OK = { stdout: '', stderr: '', interrupted: false, gitOperation: { push: { branch: 'main' } } }
+
+test('ship turns the button into a pending line with a sound, until the ship turn ends', async ($, on) => {
+  mock.clock(on)
+  const w = world(on, {
+    'status --porcelain=v2 --branch': { exitCode: 0, stdout: DIRTY },
+    'worktree list --porcelain': { exitCode: 0, stdout: WORKTREES },
+  })
+  await $.session.start(START)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    w.sounds.length = 0
+    await ui.press({ key: 'ship' })
+    expect(w.sounds).toEqual(['sounds/press.wav'])
+    expect(await ui.find({ key: 'ship' })).toBeUndefined()
+    expect((await ui.find({ type: 'Text', text: /依頼中/ }))?.text).toBe(' ⬆ コミット・push を依頼中…')
+
+    const turnId = `ship-${surface}`
+    await $.turn.start({ text: w.prompts.at(-1) ?? '', turnId })
+    // ほかのターンが終わっても依頼中のまま
+    await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 'other', reason: 'answer' })
+    expect(await ui.find({ key: 'ship' })).toBeUndefined()
+
+    await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId, reason: 'answer' })
+    expect(await ui.find({ key: 'ship' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /依頼中/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('a git push that went through shows a done line with a sound for a few seconds', async ($, on) => {
+  const clock = mock.clock(on)
+  let isPushed = false
+  const w = world(on, {
+    'status --porcelain=v2 --branch': () => ({ exitCode: 0, stdout: isPushed ? CLEAN : DIRTY }),
+    'worktree list --porcelain': { exitCode: 0, stdout: WORKTREES },
+  })
+  on('tool.call', () => {
+    isPushed = true
+    return { result: PUSH_OK }
+  })
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'ship' })
+
+  await $.tool.call({ tool: 'Bash', command: 'git push' })
+  // 演出は Bash の結果を待たせずに走るので、それが終わるのを待つ
+  await clock.advance(0)
+  expect(w.sounds).toEqual(['sounds/press.wav', 'sounds/pushed.wav'])
+  expect((await ui.find({ type: 'Text', text: /push しました/ }))?.text).toBe(' ✓ main に push しました')
+  expect(await ui.find({ type: 'Text', text: /依頼中/ })).toBeUndefined()
+
+  await clock.advance(4_000)
+  expect(await ui.find({ type: 'Text', text: /push しました/ })).toBeUndefined()
+  // push 済みできれいなので、ボタンも出ない
+  expect(await ui.find({ key: 'ship' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a failed push, or a push of another branch, shows no done line', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, {
+    'status --porcelain=v2 --branch': { exitCode: 0, stdout: DIRTY },
+    'worktree list --porcelain': { exitCode: 0, stdout: WORKTREES },
+  })
+  let answer: object = {}
+  on('tool.call', () => answer as never)
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  answer = { result: { ...PUSH_OK, gitOperation: { push: { branch: 'feature' } } } }
+  await $.tool.call({ tool: 'Bash', command: 'git push origin feature' })
+  answer = { result: PUSH_OK, isError: true, text: 'rejected' }
+  await $.tool.call({ tool: 'Bash', command: 'git push' })
+  answer = { result: { stdout: '', stderr: '', interrupted: false } }
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+  await clock.advance(0)
+
+  expect(w.sounds).toEqual([])
+  expect(await ui.find({ type: 'Text', text: /push しました/ })).toBeUndefined()
+  expect(await ui.find({ key: 'ship' })).toBeDefined()
   await ui.unmount()
 })

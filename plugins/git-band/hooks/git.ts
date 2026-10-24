@@ -99,11 +99,18 @@ export function pullPrompt(cwd: string, s: GitStatus | null, output: string): st
   ].join('\n')
 }
 
+const SHIP_HEADLINE = 'git-band のボタンからの依頼です。今の変更をコミットして push してください。'
+
+/** ターンの最初の文が、コミットして push ボタンの依頼文か。 */
+export function isShipPrompt(text: string): boolean {
+  return text.includes(SHIP_HEADLINE)
+}
+
 /** コミットして push ボタンで Claude へ送る依頼文。 */
 export function shipPrompt(cwd: string, s: GitStatus): string {
   const where = s.branch ? `${cwd}（ブランチ ${s.branch}）` : cwd
   return [
-    'git-band のボタンからの依頼です。今の変更をコミットして push してください。',
+    SHIP_HEADLINE,
     '',
     `リポジトリ: ${where}`,
     '',
