@@ -63,10 +63,9 @@ export function formatStatus(d: StatusData): string {
 
   if (d.pending.length > 0) {
     lines.push('')
-    lines.push(`保留中（${d.pending.length} 件。既定ブランチで次にセッションを始めたときに再判定して書きます）`)
+    lines.push(`保留中（${d.pending.length} 件。次にセッションを始めたときに再判定して書きます）`)
     d.pending.slice(0, 10).forEach(p => {
-      const why = p.why === 'branch' ? `ブランチ ${p.branch ?? '?'}` : p.why === 'cap' ? 'セッション上限' : '書き込み失敗'
-      lines.push(`  - [${p.section}] ${p.text}（${why}）`)
+      lines.push(`  - [${p.section}] ${p.text}（${p.why === 'write-failed' ? '書き込み失敗' : '以前の版の保留'}）`)
     })
   }
 

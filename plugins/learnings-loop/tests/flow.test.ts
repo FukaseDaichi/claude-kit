@@ -56,15 +56,17 @@ type World = {
   forks: string[]
   completes: { model: string; prompt: string }[]
   git: Record<string, string>
+  runs: string[]
 }
 
 /** エンジンの代わり: ファイル・git・モデルを答える。 */
-function world(on: On, init: Partial<World> = {}): World {
+function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeReply?: string } = {}): World {
   const w: World = {
     files: init.files ?? new Map([[FILE, INITIAL]]),
     forks: [],
     completes: [],
     git: init.git ?? {},
+    runs: [],
   }
   on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
   on('session.cwd', () => ({ value: ROOT }))
@@ -82,6 +84,7 @@ function world(on: On, init: Partial<World> = {}): World {
   })
   on('process.run', (_, e) => {
     const key = e.argv.slice(1).join(' ')
+    w.runs.push(key)
     const out = w.git[key]
     return { value: { exitCode: out === undefined ? 1 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -91,7 +94,7 @@ function world(on: On, init: Partial<World> = {}): World {
     return {
       value: {
         isAnswered: true,
-        text: FORK_REPLY,
+        text: init.forkReply?.() ?? FORK_REPLY,
         usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 },
       },
     }
@@ -101,7 +104,7 @@ function world(on: On, init: Partial<World> = {}): World {
     return {
       value: {
         isAnswered: true,
-        text: JUDGE_REPLY,
+        text: init.judgeReply ?? JUDGE_REPLY,
         usage: { input_tokens: 5, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 },
       },
     }
@@ -218,11 +221,10 @@ test('undo removes the appended line only while it is still there', async ($, on
   expect(w.files.get(FILE)).toContain('pipestatus')
 })
 
-test('on a work branch the candidate is held, then written on the default branch next session', async ($, on) => {
+test('on a work branch (or a worktree) the line is written right there', async ($, on) => {
   const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
   mock.store(on)
-  const git: Record<string, string> = { 'rev-parse --abbrev-ref HEAD': 'feature/x', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' }
-  const w = world(on, { git })
+  const w = world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'feature/x', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' } })
   on('session.turns', () => ({ value: 1 }))
 
   await $.session.start(ON_MAIN)
@@ -231,20 +233,88 @@ test('on a work branch the candidate is held, then written on the default branch
   await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   await clock.advance(2000)
 
-  expect(w.files.get(FILE)).toBe(INITIAL)
-  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
-  expect(status.text).toContain('保留中（1 件')
-  expect(status.text).toContain('ブランチ feature/x')
-
-  // 既定ブランチに戻って次のセッション: 再判定して書く
-  git['rev-parse --abbrev-ref HEAD'] = 'main'
-  const judgeCalls = w.completes.length
-  await $.session.start(ON_MAIN)
-  expect(w.completes.length).toBe(judgeCalls + 1)
   expect(w.files.get(FILE)).toContain('- 2026-10-22: zsh では PIPESTATUS でなく pipestatus を使う')
-  const after = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
-  expect(after.text).not.toContain('保留中')
-  expect(after.text).toContain('[保留分]')
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).not.toContain('保留中')
+})
+
+test('more than three lines in a session are all written (no session cap)', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  let n = 0
+  const w = world(on, {
+    git: { 'rev-parse --abbrev-ref HEAD': 'main' },
+    forkReply: () => {
+      n++
+      return JSON.stringify(
+        [1, 2].map(k => ({ section: 'Domain Knowledge', text: `事実 ${n}-${k}`, evidence: 'ツール出力で確認', evidenceKind: 'research-confirmed' })),
+      )
+    },
+    judgeReply: '[{"id":"c1","verdict":"auto","reason":"ok"},{"id":"c2","verdict":"auto","reason":"ok"}]',
+  })
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+
+  await $.session.start(ON_MAIN)
+  for (const t of [1, 2]) {
+    turns = t
+    await $.turn.start({ text: 'edit', turnId: `t${t}` })
+    await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+    await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: `t${t}`, reason: 'answer' })
+    await clock.advance(2000)
+  }
+
+  const text = w.files.get(FILE) ?? ''
+  for (const line of ['事実 1-1', '事実 1-2', '事実 2-1', '事実 2-2']) expect(text).toContain(line)
+})
+
+test('git commit stages LEARNINGS.md first, only when it has changes', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const git: Record<string, string> = { 'rev-parse --abbrev-ref HEAD': 'feature/x', [`add -- ${FILE}`]: '' }
+  const w = world(on, { git })
+  on('session.turns', () => ({ value: 0 }))
+  await $.session.start(ON_MAIN)
+  const ADD = `add -- ${FILE}`
+
+  // 変更なし: add しない
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m "fix"' })
+  expect(w.runs.includes(ADD)).toBe(false)
+
+  // 変更あり: commit 以外のコマンドでは add しない
+  git[`status --porcelain -- ${FILE}`] = ' M LEARNINGS.md'
+  await $.tool.call({ tool: 'Bash', command: 'git status && git log --oneline -3' })
+  expect(w.runs.includes(ADD)).toBe(false)
+
+  // 変更あり + commit: add してから commit が走る
+  await $.tool.call({ tool: 'Bash', command: 'git add src/a.ts && git -C /repo commit -m "fix"' })
+  expect(w.runs.filter(r => r === ADD).length).toBe(1)
+})
+
+test('a turn where Claude edited LEARNINGS.md itself is not extracted', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  const w = world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main' } })
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+  await $.session.start(ON_MAIN)
+
+  turns = 1
+  await $.turn.start({ text: 'fix and update learnings', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'x', new_string: 'y' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(2000)
+  expect(w.forks.length).toBe(0)
+
+  // 次の編集ターンは、そのターンだけが対象になる
+  turns = 2
+  await $.turn.start({ text: 'more', turnId: 't2' })
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/b.ts`, old_string: 'a', new_string: 'b' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(2000)
+  expect(w.forks.length).toBe(1)
+  expect(w.forks[0]).toContain('直近の 1 回分')
 })
 
 test('without a LEARNINGS.md the mod stays quiet and /learnings points at init', async ($, on) => {

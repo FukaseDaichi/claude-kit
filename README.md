@@ -7,7 +7,7 @@ FukaseDaichi の Claude Code 用スキル・Mod・エージェント集。リポ
 | プラグイン | 種類 | 内容 |
 | --- | --- | --- |
 | [git-band](plugins/git-band/) | Mod | 入力欄の上に git の状態（ブランチ／未コミット／未 push／追加の worktree）を出し、pull をボタン1つで実行、コミットと push は Claude に依頼する |
-| [learnings-loop](plugins/learnings-loop/)（試験中） | Mod＋スキル | リポジトリの `LEARNINGS.md` に作業中の学びを裏で自動追記する。取り消し・保留・統合の案内つき。スキル `learnings-loop:update-learnings` / `learnings-loop:consolidate-learnings` を同梱 |
+| [learnings-loop](plugins/learnings-loop/)（試験中） | Mod＋スキル | リポジトリの `LEARNINGS.md` に作業中の学びを裏で自動追記し、git commit に同梱する。取り消し・統合の案内つき。スキル `learnings-loop:update-learnings` / `learnings-loop:consolidate-learnings` を同梱 |
 
 ## 入れる
 

@@ -35,17 +35,26 @@ claude plugin install learnings-loop@claude-kit --scope user
    - 1段目: 今の会話をフォークして（`$.model.fork`。プロンプトキャッシュが効く）学びの候補を最大3件、根拠付きで出させる
    - コードで検証: セクション名・1行・200字以内・根拠あり・機密情報なし。根拠が「推測」「直したが未確認」の候補は捨てる
    - 2段目: 小さいモデル（既定 `haiku`）が、既存の `LEARNINGS.md` と「捨てた候補」に照らして **auto / drop** に振り分ける
-3. `auto` の候補は `LEARNINGS.md` の該当セクションの末尾に `- YYYY-MM-DD: 本文` を1行足す。1セッション3件まで（超過分は保留し、次のセッション開始時に書く）
+3. `auto` の候補は、**今いるブランチ（worktree ならその worktree）の** `LEARNINGS.md` の該当セクションの末尾に `- YYYY-MM-DD: 本文` を1行足す。件数の上限はない
 4. 帯（入力欄の上）に `📚 今セッション 2件追記（u 取り消し）` と出る。セッション中ずっと出る
+5. Claude が `git commit` を実行する直前に、`LEARNINGS.md` に未 commit の変更があれば `git add` して、作業と同じ commit に入れる
 
 ## 何が起きないか
 
 - `## Consolidated Principles` と冒頭コメントには書かない
-- **既定ブランチ以外（作業ブランチ・別 worktree・detached HEAD）では書かない**。候補は保留し、既定ブランチで次にセッションを始めたときに最新のファイルで再判定して書く
-- `LEARNINGS.md` が5見出しでなければ何もしない。競合マーカーがあれば書かない
+- `LEARNINGS.md` が5見出しでなければ何もしない。競合マーカーがあれば書かずに保留し、次のセッション開始時に再判定して書く
+- 自分で commit はしない。`git add` するのは Claude の `git commit` の直前だけ
 - `AGENTS.md` / `CLAUDE.md` / スキルは触らない
 - 人に仕分けを求めない。自動の条件を満たさない候補は捨てる（`/learnings` の一覧から採用し直せる）
 - 調査だけ・ユーザーの訂正だけで終わったターンは自動では拾わない（`/learnings now` で手動）
+- Claude が自分で `LEARNINGS.md` を編集したターン（`update-learnings` を回したときなど）は抽出しない。そのターンまでを処理済みにする
+
+## commit との関係
+
+- 学びは作業中のブランチに書かれ、作業の commit と一緒に PR へ入る
+- `git commit` の直前に `LEARNINGS.md` を `git add` するので、手で直した分も含めてそのファイルの変更はすべてその commit に入る
+- commit したターンそのものから出た学びは、ターンの後に抽出されるので次の commit に回る。最後の commit の後に出た学びは、未 commit のまま作業ツリーに残る
+- `git -C <別のリポジトリ> commit` でも、`git add` するのは今のセッションの `LEARNINGS.md` だけ
 
 ## 取り消し方
 
@@ -91,11 +100,9 @@ claude plugin install learnings-loop@claude-kit --scope user
 |---|---|
 | 抽出 | auto（manual = `/learnings now` のときだけ） |
 | 1回の抽出の候補上限 | 3 |
-| 1セッションの自動追記上限 | 3 |
 | 抽出の最低間隔（ターン） | 0 |
 | 統合の案内: 件数 / 日数 | 80 / 7 |
 | 原則の注入 | on |
-| 既定ブランチ | 空（origin/HEAD → main → master → 今のブランチ。`*` でどのブランチでも書く） |
 | 本文の文字数上限 | 200 |
 | 判定モデル | haiku |
 

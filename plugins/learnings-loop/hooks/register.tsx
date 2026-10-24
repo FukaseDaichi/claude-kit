@@ -8,7 +8,7 @@ import type { EngineInterface, ModelUsage, PluginOptions, Register } from 'claud
 
 import type { Candidate, DropReason } from './candidates'
 import { makeJudge, runExtraction, type ExtractOptions } from './extract'
-import { commonDir } from './git'
+import { commonDir, hasChanges, stage } from './git'
 import {
   countObservations,
   daysBetween,
@@ -66,12 +66,10 @@ const extractionAtom = atom({ plugin: 'learnings-loop', key: 'extraction' } as c
 type Options = {
   extraction: 'auto' | 'manual'
   maxCandidates: number
-  sessionCap: number
   minInterval: number
   noticeCount: number
   noticeDays: number
   injectPrinciples: boolean
-  defaultBranch: string
   maxChars: number
   judgeModel: string
 }
@@ -83,12 +81,10 @@ function readOptions(o: PluginOptions): Options {
   return {
     extraction: str(o.extraction, 'auto') === 'manual' ? 'manual' : 'auto',
     maxCandidates: num(o.maxCandidates, 3),
-    sessionCap: num(o.sessionCap, 3),
     minInterval: num(o.minInterval, 0),
     noticeCount: num(o.noticeCount, 80),
     noticeDays: num(o.noticeDays, 7),
     injectPrinciples: bool(o.injectPrinciples, true),
-    defaultBranch: str(o.defaultBranch, ''),
     maxChars: num(o.maxChars, 200),
     judgeModel: str(o.judgeModel, 'haiku'),
   }
@@ -115,7 +111,6 @@ function extractOptions(): ExtractOptions {
   return {
     maxCandidates: options.maxCandidates,
     maxChars: options.maxChars,
-    sessionCap: options.sessionCap,
     judgeModel: options.judgeModel,
     judgeTimeoutMs: 60_000,
   }
@@ -231,13 +226,11 @@ async function consumePending($: EngineInterface): Promise<void> {
       repoKey: s.repoKey,
       sessionId: await $.session.id(),
       rejudge: makeJudge($, { repoKey: s.repoKey, options: extractOptions() }, usage),
-      branchConfigured: options.defaultBranch,
       fromPending: true,
-      branchOf: c => fresh.find(p => p.id === c.id && p.text === c.text)?.branch,
     },
     fresh,
   )
-  // 保留のまま残るもの（まだ作業ブランチ、など）は元の発生日時を保つ
+  // 保留のまま残るもの（まだ競合マーカーがある、など）は元の発生日時を保つ
   const stillPending: PendingCandidate[] = result.pending.map(p => {
     const orig = fresh.find(f => f.text === p.text)
     return orig !== undefined ? { ...p, createdAt: orig.createdAt, branch: orig.branch ?? p.branch } : p
@@ -262,7 +255,6 @@ async function extractNow($: EngineInterface, force: boolean): Promise<string> {
     if (since < Math.max(1, options.minInterval)) return ''
   }
   await update($, extractionAtom, x => ({ ...x, isPending: false, isRunning: true }))
-  const appended = await read($, appendedAtom)
   try {
     const outcome = await runExtraction($, {
       file: s.file,
@@ -271,19 +263,17 @@ async function extractNow($: EngineInterface, force: boolean): Promise<string> {
       sessionId: await $.session.id(),
       criteria: criteriaText,
       turnsSince: since,
-      appendedSoFar: appended.count,
-      branchConfigured: options.defaultBranch,
       options: extractOptions(),
     })
     await bumpUsage($, outcome.usage, 1)
     if (outcome.status === 'done' && outcome.result !== undefined) {
       const r = outcome.result
-      if (r.pending.length > 0 || outcome.capped.length > 0) {
-        await setPending($, s.repoKey, [...(await getPending($, s.repoKey)), ...r.pending, ...outcome.capped])
+      if (r.pending.length > 0) {
+        await setPending($, s.repoKey, [...(await getPending($, s.repoKey)), ...r.pending])
       }
       await update($, extractionAtom, x => ({ ...x, processedUpTo: turns }))
       await noteWritten($, r.written, false)
-      const parts = [`追記 ${r.written.length}`, `保留 ${r.pending.length + outcome.capped.length}`, `捨て ${r.dropped.length}`]
+      const parts = [`追記 ${r.written.length}`, `保留 ${r.pending.length}`, `捨て ${r.dropped.length}`]
       if (r.note !== undefined) parts.push(r.note)
       $.ui.log(`extraction: ${parts.join(' / ')}`, { to: 'debug' })
       return `抽出しました: ${parts.join(' / ')}`
@@ -358,7 +348,6 @@ async function adoptDiscarded($: EngineInterface, index: number): Promise<string
       sessionId: await $.session.id(),
       // 人の採用なので判定は通さない。同じ行の重複だけ writer が落とす
       rejudge: async cands => new Map(cands.map(c => [c.id, { verdict: 'auto' as const, reason: 'adopted' }])),
-      branchConfigured: options.defaultBranch,
       fromPending: false,
     },
     [candidate],
@@ -455,6 +444,21 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
   return statusText($)
 }
 
+// ---- commit への同梱 -----------------------------------------------------------
+
+const GIT_COMMIT = /(^|[\s;&|(])git\s+(?:-[cC]\s+\S+\s+)*commit(\s|$)/
+
+/** `git commit` の直前に、LEARNINGS.md の未 commit の追記を index に載せて同じ commit に入れる。 */
+async function stageLearnings($: EngineInterface): Promise<void> {
+  const s = await read($, sessionAtom)
+  if (s.file === null) return
+  const dir = dirOf(s.file)
+  if (!(await hasChanges((argv, init) => $.process.run(argv, init), dir, s.file))) return
+  if (await stage((argv, init) => $.process.run(argv, init), dir, s.file)) {
+    $.ui.log(`staged ${s.file} for the commit`, { to: 'debug' })
+  }
+}
+
 // ---- 配線 ---------------------------------------------------------------------
 
 export const register: Register = (on, rawOptions) => {
@@ -515,6 +519,7 @@ export const register: Register = (on, rawOptions) => {
       '',
       `生の観察 ${observationsAtStart} 件が \`${s.file}\` にある。関係しそうな作業の前に grep して参照せよ。`,
       '学びの記録は learnings-loop が自動で行う。明示的に頼まれない限り、自分で LEARNINGS.md に追記しない。',
+      '`git commit` の直前に learnings-loop が LEARNINGS.md の未 commit の追記を `git add` する。LEARNINGS.md が commit に含まれていても、それは意図どおり。',
     ].join('\n')
     return { sections: [...r.sections, { id: SECTION_ID, text, scope: 'session' as const }] }
   })
@@ -544,7 +549,21 @@ export const register: Register = (on, rawOptions) => {
     return ran
   })
 
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    if (GIT_COMMIT.test(e.command)) {
+      await stageLearnings($).catch(err => $.ui.log(`stage: ${String(err)}`, { to: 'debug' }))
+    }
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
+    // Claude が自分で LEARNINGS.md を書いたターンは、そこまでを処理済みにして抽出しない（二重の追記を防ぐ）
+    if (e.agentId === undefined && !e.isAborted && turn.editedLearnings) {
+      const turns = await $.session.turns()
+      await update($, extractionAtom, x => ({ ...x, isPending: false, processedUpTo: turns }))
+      $.ui.log('turn edited LEARNINGS.md itself; skipping extraction', { to: 'debug' })
+      return next(e)
+    }
     if (e.agentId === undefined && !e.isAborted && options.extraction === 'auto') {
       const s = await read($, sessionAtom)
       if (s.file !== null && (turn.edits > 0 || turn.errors > 0)) {

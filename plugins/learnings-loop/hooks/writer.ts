@@ -3,7 +3,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { Candidate, Dropped, Verdict } from './candidates'
-import { checkBranch } from './git'
+import { currentBranch } from './git'
 import { appendLine, formatLine, hasLine, hash, localDate, parse } from './learnings-file'
 import { addAppended, addDiscarded, type AppendedRecord, type PendingCandidate } from './store'
 
@@ -20,11 +20,7 @@ export type WriteContext = {
   /** 2段目の判定時に読んだ内容のハッシュ。保留消化のときは undefined（必ず再判定） */
   expectedHash?: string
   rejudge: Rejudge
-  /** `userConfig.defaultBranch`。'*' ならどのブランチでも書く */
-  branchConfigured?: string
   fromPending: boolean
-  /** 元ブランチ（保留に入れるときの記録用） */
-  branchOf?: (c: Candidate) => string | undefined
 }
 
 export type WriteResult = {
@@ -49,24 +45,15 @@ export async function writeCandidates(
       out.pending.push({
         ...c,
         createdAt: now,
-        branch: branch ?? ctx.branchOf?.(c),
+        branch,
         sessionId: ctx.sessionId,
         why,
       })
     }
   }
 
-  // 1. 既定ブランチの確認（D10）
-  const branch = await checkBranch(
-    (argv, init) => $.process.run(argv, init),
-    ctx.dir,
-    ctx.branchConfigured,
-  )
-  if (!branch.isDefault) {
-    toPending(candidates, 'branch', branch.current)
-    out.note = `作業ブランチ ${branch.current ?? '?'}（既定: ${branch.expected ?? '?'}）のため保留`
-    return out
-  }
+  // 1. 今いるブランチ（worktree を含む）のファイルにそのまま書く。ブランチ名は記録用
+  const branch = await currentBranch((argv, init) => $.process.run(argv, init), ctx.dir)
 
   let remaining = [...candidates]
   for (let attempt = 0; attempt < 2 && remaining.length > 0; attempt++) {
@@ -75,13 +62,13 @@ export async function writeCandidates(
     try {
       text = await $.fs.read(ctx.file)
     } catch {
-      toPending(remaining, 'write-failed', branch.current)
+      toPending(remaining, 'write-failed', branch)
       out.note = 'LEARNINGS.md を読めなかったため保留'
       return out
     }
     const parsed = parse(text)
     if (!parsed.ok) {
-      toPending(remaining, 'write-failed', branch.current)
+      toPending(remaining, 'write-failed', branch)
       out.note =
         parsed.reason === 'conflict-markers'
           ? 'LEARNINGS.md に競合マーカーがあるため保留'
@@ -153,7 +140,7 @@ export async function writeCandidates(
         evidenceKind: c.evidenceKind,
         at: now,
         sessionId: ctx.sessionId,
-        branch: branch.current,
+        branch,
         fromPending: ctx.fromPending,
       }
       await addAppended($, ctx.repoKey, record)
@@ -163,7 +150,7 @@ export async function writeCandidates(
   }
 
   if (remaining.length > 0) {
-    toPending(remaining, 'write-failed', branch.current)
+    toPending(remaining, 'write-failed', branch)
     out.note = '書き込み後の確認に2回失敗したため保留'
   }
   await addDiscarded(

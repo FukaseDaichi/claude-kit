@@ -5,13 +5,12 @@ import type { EngineInterface, ModelUsage } from 'claude-code'
 import { parseStage1, parseStage2, type Candidate, type Dropped, type Verdict } from './candidates'
 import { hash } from './learnings-file'
 import { buildForkPrompt, buildJudgePrompt } from './prompts'
-import { addDiscarded, discardedTexts, getDiscarded, type PendingCandidate } from './store'
+import { addDiscarded, discardedTexts, getDiscarded } from './store'
 import { writeCandidates, type Rejudge, type WriteResult } from './writer'
 
 export type ExtractOptions = {
   maxCandidates: number
   maxChars: number
-  sessionCap: number
   judgeModel: string
   judgeTimeoutMs: number
 }
@@ -23,9 +22,6 @@ export type ExtractContext = {
   sessionId: string
   criteria: string
   turnsSince: number
-  /** 今セッションですでに自動追記した件数 */
-  appendedSoFar: number
-  branchConfigured?: string
   options: ExtractOptions
 }
 
@@ -33,8 +29,6 @@ export type ExtractOutcome = {
   status: 'done' | 'nothing-to-fork' | 'fork-failed' | 'parse-failed' | 'no-candidates'
   usage: ModelUsage
   result?: WriteResult
-  /** 上限超過で保留に回した分 */
-  capped: PendingCandidate[]
   detail?: string
 }
 
@@ -91,9 +85,9 @@ export async function runExtraction($: EngineInterface, ctx: ExtractContext): Pr
     }),
   })
   if (!fork.isAnswered) {
-    if (fork.reason === 'nothing-to-fork') return { status: 'nothing-to-fork', usage: usage.total, capped: [] }
+    if (fork.reason === 'nothing-to-fork') return { status: 'nothing-to-fork', usage: usage.total }
     const detail = fork.reason === 'api-error' ? `${fork.reason} ${fork.status ?? ''} ${fork.error}` : fork.reason
-    return { status: 'fork-failed', usage: add(usage.total, fork.usage), capped: [], detail }
+    return { status: 'fork-failed', usage: add(usage.total, fork.usage), detail }
   }
   usage.total = add(usage.total, fork.usage)
 
@@ -102,7 +96,7 @@ export async function runExtraction($: EngineInterface, ctx: ExtractContext): Pr
   try {
     stage1 = parseStage1(fork.text, { max: ctx.options.maxCandidates, maxChars: ctx.options.maxChars })
   } catch (err) {
-    return { status: 'parse-failed', usage: usage.total, capped: [], detail: String(err) }
+    return { status: 'parse-failed', usage: usage.total, detail: String(err) }
   }
   await addDiscarded(
     $,
@@ -111,7 +105,7 @@ export async function runExtraction($: EngineInterface, ctx: ExtractContext): Pr
     now,
   )
   if (stage1.candidates.length === 0) {
-    return { status: 'no-candidates', usage: usage.total, capped: [], detail: stage1.dropped.map(d => `${d.reason}:${d.text.slice(0, 40)}`).join(' / ') }
+    return { status: 'no-candidates', usage: usage.total, detail: stage1.dropped.map(d => `${d.reason}:${d.text.slice(0, 40)}`).join(' / ') }
   }
 
   // 2段目: 判定（判定時のファイル内容のハッシュを書き込み処理に渡す）
@@ -137,16 +131,6 @@ export async function runExtraction($: EngineInterface, ctx: ExtractContext): Pr
     now,
   )
 
-  // 1セッションの上限: 超過分は自動判定済みのまま保留
-  const room = Math.max(0, ctx.options.sessionCap - ctx.appendedSoFar)
-  const toWrite = auto.slice(0, room)
-  const capped: PendingCandidate[] = auto.slice(room).map(c => ({
-    ...c,
-    createdAt: now,
-    sessionId: ctx.sessionId,
-    why: 'cap',
-  }))
-
   const result = await writeCandidates(
     $,
     {
@@ -156,11 +140,10 @@ export async function runExtraction($: EngineInterface, ctx: ExtractContext): Pr
       sessionId: ctx.sessionId,
       expectedHash: hash(text),
       rejudge: judge,
-      branchConfigured: ctx.branchConfigured,
       fromPending: false,
     },
-    toWrite,
+    auto,
   )
   result.dropped.push(...dropped)
-  return { status: 'done', usage: usage.total, result, capped }
+  return { status: 'done', usage: usage.total, result }
 }

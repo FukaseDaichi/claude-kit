@@ -17,7 +17,7 @@
     },
     {
       "name": "learnings-loop",
-      "description": "（試験中）LEARNINGS.md の学びを、編集やエラーのあったターンの直後に裏で抽出して自動追記する Mod。取り消し・保留・統合の案内つき。",
+      "description": "（試験中）LEARNINGS.md の学びを、編集やエラーのあったターンの直後に裏で抽出して自動追記する Mod。今いるブランチに書き、git commit に同梱する。取り消し・統合の案内つき。",
       "author": {
         "name": "FukaseDaichi"
       },

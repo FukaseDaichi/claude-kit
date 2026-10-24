@@ -1,4 +1,4 @@
-// git の読み取り。$.process.run で呼ぶ。失敗はすべて undefined に畳む。
+// git の呼び出し。$.process.run で呼ぶ。失敗はすべて undefined（か false）に畳む。
 
 export type Run = (
   argv: readonly string[],
@@ -25,37 +25,13 @@ export async function currentBranch(run: Run, cwd: string): Promise<string | und
   return git(run, cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
 }
 
-/**
- * 既定ブランチ: 明示設定 → origin/HEAD → main → master → 今のブランチ。
- * `configured` が '*' ならどのブランチでも書く（呼び出し側が判断する）。
- */
-export async function defaultBranch(
-  run: Run,
-  cwd: string,
-  configured: string | undefined,
-): Promise<string | undefined> {
-  if (configured !== undefined && configured !== '') return configured
-  const head = await git(run, cwd, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-  if (head !== undefined && head !== '') return head.replace(/^origin\//, '')
-  for (const name of ['main', 'master']) {
-    const ref = await git(run, cwd, ['show-ref', '--verify', '--quiet', `refs/heads/${name}`])
-    if (ref !== undefined) return name
-  }
-  return currentBranch(run, cwd)
+/** そのファイルに未 commit の変更（未追跡を含む）があるか。 */
+export async function hasChanges(run: Run, cwd: string, path: string): Promise<boolean> {
+  const out = await git(run, cwd, ['status', '--porcelain', '--', path])
+  return out !== undefined && out !== ''
 }
 
-export type BranchCheck = { isDefault: boolean; current?: string; expected?: string }
-
-/** 今いるブランチが既定ブランチか。Git 管理外は常に true（ブランチの概念がない）。 */
-export async function checkBranch(
-  run: Run,
-  cwd: string,
-  configured: string | undefined,
-): Promise<BranchCheck> {
-  const current = await currentBranch(run, cwd)
-  if (current === undefined) return { isDefault: true }
-  if (configured === '*') return { isDefault: true, current, expected: '*' }
-  const expected = await defaultBranch(run, cwd, configured)
-  if (expected === undefined) return { isDefault: true, current }
-  return { isDefault: current === expected, current, expected }
+/** そのファイルを index に載せる。成功したら true。 */
+export async function stage(run: Run, cwd: string, path: string): Promise<boolean> {
+  return (await git(run, cwd, ['add', '--', path])) !== undefined
 }

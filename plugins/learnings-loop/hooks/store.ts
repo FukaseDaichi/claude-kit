@@ -12,7 +12,7 @@ export type PendingCandidate = Candidate & {
   /** 元ブランチ */
   branch?: string
   sessionId: string
-  /** 保留に入った理由 */
+  /** 保留に入った理由（'branch' / 'cap' は以前の版が残したもの） */
   why: 'branch' | 'cap' | 'write-failed'
 }
 
