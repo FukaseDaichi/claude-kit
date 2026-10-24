@@ -1,0 +1,5 @@
+# エンジンが Mod の読み込み時に生成する型定義
+.claude-plugin/types/
+plugins/*/.claude-plugin/types/
+node_modules/
+.DS_Store

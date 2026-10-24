@@ -1,0 +1,6 @@
+{
+  "name": "git-band",
+  "description": "入力欄の上に git の状態を出し、pull をボタン1つで実行、コミットと push は Claude に依頼する帯（Mod）",
+  "author": { "name": "FukaseDaichi" },
+  "types": "./types/index.d.ts"
+}

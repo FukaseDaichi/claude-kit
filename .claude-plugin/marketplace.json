@@ -1,0 +1,13 @@
+{
+  "name": "claude-kit",
+  "owner": { "name": "FukaseDaichi" },
+  "metadata": { "description": "FukaseDaichi の Claude Code 用スキル・Mod・エージェント集" },
+  "plugins": [
+    {
+      "name": "git-band",
+      "description": "入力欄の上に git の状態を出し、pull をボタン1つで実行、コミットと push は Claude に依頼する帯（Mod）",
+      "author": { "name": "FukaseDaichi" },
+      "source": "./plugins/git-band"
+    }
+  ]
+}
