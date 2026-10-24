@@ -1,0 +1,622 @@
+// learnings-loop: LEARNINGS.md の「読む → 学びを拾う → 追記する → ときどき統合する」ループを
+// Claude Code の function hooks で回す。設計書は作者のノート（非公開）にある。
+//
+// 注: `$` を受け取る関数はすべてこのファイルの最上位の関数宣言にする（エンジンの検証の規則）。
+
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, ModelUsage, PluginOptions, Register } from 'claude-code'
+
+import type { Candidate, DropReason } from './candidates'
+import { makeJudge, runExtraction, type ExtractOptions } from './extract'
+import { commonDir } from './git'
+import {
+  countObservations,
+  daysBetween,
+  hasLine,
+  isSection,
+  lastConsolidated,
+  localDate,
+  parse,
+  principles,
+  removeLine,
+} from './learnings-file'
+import { formatStatus } from './status'
+import {
+  addDiscarded,
+  getAppended,
+  getDiscarded,
+  getPending,
+  markUndone,
+  PENDING_TTL_MS,
+  removeDiscarded,
+  setPending,
+  type AppendedRecord,
+  type PendingCandidate,
+} from './store'
+import { writeCandidates } from './writer'
+
+import type { LearningsAppended, LearningsExtraction, LearningsNotice, LearningsSession } from '../types'
+
+const PLUGIN = 'learnings-loop'
+const SECTION_ID = 'learnings-loop:principles'
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
+const FILE_NAME = 'LEARNINGS.md'
+const CONSOLIDATE_PROMPT =
+  'learnings-loop:consolidate-learnings スキルを実行して、LEARNINGS.md の生の観察を原則へ統合してください。'
+
+const sessionAtom = atom({ plugin: 'learnings-loop', key: 'session' } as const, {
+  file: null,
+  repoKey: null,
+  hasPrompted: false,
+} as LearningsSession)
+const appendedAtom = atom({ plugin: 'learnings-loop', key: 'appended' } as const, { count: 0, fromPending: 0 } as LearningsAppended)
+const noticeAtom = atom({ plugin: 'learnings-loop', key: 'notice' } as const, {
+  isDue: false,
+  observations: 0,
+  isDismissed: false,
+} as LearningsNotice)
+const extractionAtom = atom({ plugin: 'learnings-loop', key: 'extraction' } as const, {
+  processedUpTo: 0,
+  isPending: false,
+  isRunning: false,
+  runs: 0,
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+} as LearningsExtraction)
+
+type Options = {
+  extraction: 'auto' | 'manual'
+  maxCandidates: number
+  sessionCap: number
+  minInterval: number
+  noticeCount: number
+  noticeDays: number
+  injectPrinciples: boolean
+  defaultBranch: string
+  maxChars: number
+  judgeModel: string
+}
+
+function readOptions(o: PluginOptions): Options {
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  const str = (v: unknown, d: string) => (typeof v === 'string' ? v : d)
+  const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d)
+  return {
+    extraction: str(o.extraction, 'auto') === 'manual' ? 'manual' : 'auto',
+    maxCandidates: num(o.maxCandidates, 3),
+    sessionCap: num(o.sessionCap, 3),
+    minInterval: num(o.minInterval, 0),
+    noticeCount: num(o.noticeCount, 80),
+    noticeDays: num(o.noticeDays, 7),
+    injectPrinciples: bool(o.injectPrinciples, true),
+    defaultBranch: str(o.defaultBranch, ''),
+    maxChars: num(o.maxChars, 200),
+    judgeModel: str(o.judgeModel, 'haiku'),
+  }
+}
+
+// ---- モジュールの状態（リロードで消えてよいもの） -----------------------------
+
+let options: Options = readOptions({})
+/** セッション開始時点で固定する原則の本文（プロンプトキャッシュを壊さないため） */
+let principlesText = ''
+let observationsAtStart = 0
+let criteriaText = ''
+/** ターンごとの観察 */
+let turn = { edits: 0, errors: 0, editedLearnings: false }
+let poller: { cancel: () => void } | undefined
+
+const ZERO_USAGE: ModelUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
+function dirOf(path: string): string {
+  return path.replace(/\/[^/]*$/, '') || '/'
+}
+
+function extractOptions(): ExtractOptions {
+  return {
+    maxCandidates: options.maxCandidates,
+    maxChars: options.maxChars,
+    sessionCap: options.sessionCap,
+    judgeModel: options.judgeModel,
+    judgeTimeoutMs: 60_000,
+  }
+}
+
+// ---- 検出 -------------------------------------------------------------------
+
+async function findLearnings($: EngineInterface, cwd: string): Promise<string | null> {
+  const dirs: string[] = []
+  let dir = cwd.replace(/\/+$/, '')
+  for (let i = 0; i < 16 && dir !== ''; i++) {
+    dirs.push(dir)
+    const parent = dirOf(dir)
+    if (parent === dir) break
+    if (parent === '/') {
+      dirs.push('/')
+      break
+    }
+    dir = parent
+  }
+  const repo = await $.session.repo().catch(() => null)
+  if (repo !== null && !dirs.includes(repo.root)) dirs.push(repo.root)
+  for (const d of dirs) {
+    const path = d === '/' ? `/${FILE_NAME}` : `${d}/${FILE_NAME}`
+    if (await $.fs.exists(path).catch(() => false)) return path
+  }
+  return null
+}
+
+async function readFile($: EngineInterface, file: string): Promise<string | undefined> {
+  try {
+    return await $.fs.read(file)
+  } catch {
+    return undefined
+  }
+}
+
+async function refreshNotice($: EngineInterface, text: string): Promise<void> {
+  const observations = countObservations(text)
+  const last = lastConsolidated(text)
+  const daysSince = last !== undefined ? daysBetween(localDate(await $.clock.now()), last) : undefined
+  const isDue = observations >= options.noticeCount || (daysSince !== undefined && daysSince > options.noticeDays)
+  await update($, noticeAtom, n => ({ ...n, isDue, observations, daysSince }))
+}
+
+async function detect($: EngineInterface, cwd: string): Promise<void> {
+  const file = await findLearnings($, cwd)
+  if (file === null) {
+    await update($, sessionAtom, s => ({ ...s, file: null, repoKey: null }))
+    return
+  }
+  const text = await readFile($, file)
+  const parsed = text !== undefined ? parse(text) : undefined
+  if (text === undefined || parsed === undefined || !parsed.ok) {
+    $.ui.log(`${file}: ${parsed?.ok === false ? parsed.reason : 'unreadable'}; doing nothing`, { to: 'debug' })
+    await update($, sessionAtom, s => ({ ...s, file: null, repoKey: null }))
+    return
+  }
+  const key = (await commonDir((argv, init) => $.process.run(argv, init), dirOf(file))) ?? file
+  await update($, sessionAtom, s => ({ ...s, file, repoKey: key }))
+  principlesText = principles(text)
+  observationsAtStart = countObservations(text)
+  await refreshNotice($, text)
+}
+
+// ---- 書き込みの共通部分 -------------------------------------------------------
+
+async function bumpUsage($: EngineInterface, u: ModelUsage, runs = 0): Promise<void> {
+  await update($, extractionAtom, x => ({
+    ...x,
+    runs: x.runs + runs,
+    usage: {
+      input: x.usage.input + u.input_tokens,
+      output: x.usage.output + u.output_tokens,
+      cacheRead: x.usage.cacheRead + u.cache_read_input_tokens,
+      cacheWrite: x.usage.cacheWrite + u.cache_creation_input_tokens,
+    },
+  }))
+}
+
+async function noteWritten($: EngineInterface, written: readonly AppendedRecord[], fromPending: boolean): Promise<void> {
+  if (written.length === 0) return
+  const last = written[written.length - 1]
+  await update($, appendedAtom, a => ({
+    count: a.count + (fromPending ? 0 : written.length),
+    fromPending: a.fromPending + (fromPending ? written.length : 0),
+    last: last === undefined ? a.last : { recordId: last.id, section: last.section, line: last.line },
+  }))
+  const s = await read($, sessionAtom)
+  if (s.file !== null) {
+    const text = await readFile($, s.file)
+    if (text !== undefined) await refreshNotice($, text)
+  }
+  $.ui.toast(`📚 ${fromPending ? '保留していた' : ''}${written.length}件を LEARNINGS.md に追記（u で取り消し）`)
+  for (const r of written) $.ui.log(`appended [${r.section}] ${r.text}`, { to: 'debug' })
+}
+
+async function consumePending($: EngineInterface): Promise<void> {
+  const s = await read($, sessionAtom)
+  if (s.file === null || s.repoKey === null) return
+  const list = await getPending($, s.repoKey)
+  if (list.length === 0) return
+  const now = await $.clock.now()
+  const fresh = list.filter(p => p.createdAt + PENDING_TTL_MS > now)
+  const expired = list.filter(p => p.createdAt + PENDING_TTL_MS <= now)
+  await addDiscarded($, s.repoKey, expired.map(p => ({ text: p.text, section: p.section, reason: 'expired' as DropReason })), now)
+  const usage = { total: ZERO_USAGE }
+  const result = await writeCandidates(
+    $,
+    {
+      file: s.file,
+      dir: dirOf(s.file),
+      repoKey: s.repoKey,
+      sessionId: await $.session.id(),
+      rejudge: makeJudge($, { repoKey: s.repoKey, options: extractOptions() }, usage),
+      branchConfigured: options.defaultBranch,
+      fromPending: true,
+      branchOf: c => fresh.find(p => p.id === c.id && p.text === c.text)?.branch,
+    },
+    fresh,
+  )
+  // 保留のまま残るもの（まだ作業ブランチ、など）は元の発生日時を保つ
+  const stillPending: PendingCandidate[] = result.pending.map(p => {
+    const orig = fresh.find(f => f.text === p.text)
+    return orig !== undefined ? { ...p, createdAt: orig.createdAt, branch: orig.branch ?? p.branch } : p
+  })
+  await setPending($, s.repoKey, stillPending)
+  await bumpUsage($, usage.total)
+  await noteWritten($, result.written, true)
+  if (result.note !== undefined) $.ui.log(`pending: ${result.note}`, { to: 'debug' })
+}
+
+// ---- 抽出 ---------------------------------------------------------------------
+
+async function extractNow($: EngineInterface, force: boolean): Promise<string> {
+  const s = await read($, sessionAtom)
+  if (s.file === null || s.repoKey === null) return 'LEARNINGS.md がないので抽出しません。'
+  const ex = await read($, extractionAtom)
+  if (ex.isRunning) return '抽出が走っています。'
+  const turns = await $.session.turns()
+  const since = turns - ex.processedUpTo
+  if (!force) {
+    if (!ex.isPending) return ''
+    if (since < Math.max(1, options.minInterval)) return ''
+  }
+  await update($, extractionAtom, x => ({ ...x, isPending: false, isRunning: true }))
+  const appended = await read($, appendedAtom)
+  try {
+    const outcome = await runExtraction($, {
+      file: s.file,
+      dir: dirOf(s.file),
+      repoKey: s.repoKey,
+      sessionId: await $.session.id(),
+      criteria: criteriaText,
+      turnsSince: since,
+      appendedSoFar: appended.count,
+      branchConfigured: options.defaultBranch,
+      options: extractOptions(),
+    })
+    await bumpUsage($, outcome.usage, 1)
+    if (outcome.status === 'done' && outcome.result !== undefined) {
+      const r = outcome.result
+      if (r.pending.length > 0 || outcome.capped.length > 0) {
+        await setPending($, s.repoKey, [...(await getPending($, s.repoKey)), ...r.pending, ...outcome.capped])
+      }
+      await update($, extractionAtom, x => ({ ...x, processedUpTo: turns }))
+      await noteWritten($, r.written, false)
+      const parts = [`追記 ${r.written.length}`, `保留 ${r.pending.length + outcome.capped.length}`, `捨て ${r.dropped.length}`]
+      if (r.note !== undefined) parts.push(r.note)
+      $.ui.log(`extraction: ${parts.join(' / ')}`, { to: 'debug' })
+      return `抽出しました: ${parts.join(' / ')}`
+    }
+    if (outcome.status === 'no-candidates' || outcome.status === 'nothing-to-fork') {
+      await update($, extractionAtom, x => ({ ...x, processedUpTo: turns }))
+      $.ui.log(`extraction: ${outcome.status} ${outcome.detail ?? ''}`, { to: 'debug' })
+      return outcome.status === 'nothing-to-fork'
+        ? 'まだ会話がないので抽出できません。'
+        : `候補はありませんでした。${outcome.detail ? `（${outcome.detail}）` : ''}`
+    }
+    // fork-failed / parse-failed: 処理済み位置は進めない（次回に同じ範囲がもう一度対象になる）
+    $.ui.log(`extraction failed: ${outcome.status} ${outcome.detail ?? ''}`, { to: 'debug' })
+    return `抽出に失敗しました（${outcome.status}${outcome.detail ? `: ${outcome.detail}` : ''}）。次回にまとめて再試行します。`
+  } finally {
+    await update($, extractionAtom, x => ({ ...x, isRunning: false }))
+  }
+}
+
+// ---- 取り消し・採用・作成 -----------------------------------------------------
+
+async function undoRecord($: EngineInterface, rec: AppendedRecord): Promise<string> {
+  const s = await read($, sessionAtom)
+  if (s.file === null || s.repoKey === null) return 'LEARNINGS.md がありません。'
+  if (rec.isUndone) return 'すでに取り消し済みです。'
+  const text = await readFile($, s.file)
+  if (text === undefined) return 'LEARNINGS.md を読めませんでした。'
+  if (!isSection(rec.section)) return `不明なセクション: ${rec.section}`
+  const r = removeLine(text, rec.section, rec.line)
+  if (!r.ok) {
+    return r.reason === 'not-found' ? '同じ行が残っていないので触りません（手で直した後のようです）。' : `取り消せません（${r.reason}）`
+  }
+  await $.fs.write(s.file, r.text)
+  const after = await readFile($, s.file)
+  if (after === undefined || hasLine(after, rec.section, rec.line)) return '書き込み後の確認に失敗しました。'
+  await markUndone($, s.repoKey, rec.id)
+  await addDiscarded($, s.repoKey, [{ text: rec.text, section: rec.section, reason: 'undone' }], await $.clock.now())
+  await update($, appendedAtom, a => ({ ...a, last: a.last?.recordId === rec.id ? undefined : a.last }))
+  await refreshNotice($, after)
+  return `取り消しました: [${rec.section}] ${rec.text}`
+}
+
+async function undoLast($: EngineInterface): Promise<string> {
+  const s = await read($, sessionAtom)
+  if (s.repoKey === null) return 'LEARNINGS.md がありません。'
+  const list = (await getAppended($, s.repoKey)).filter(r => !r.isUndone)
+  const rec = list[list.length - 1]
+  if (rec === undefined) return '取り消せる追記がありません。'
+  return undoRecord($, rec)
+}
+
+async function adoptDiscarded($: EngineInterface, index: number): Promise<string> {
+  const s = await read($, sessionAtom)
+  if (s.file === null || s.repoKey === null) return 'LEARNINGS.md がありません。'
+  const list = [...(await getDiscarded($, s.repoKey))].reverse().filter(x => x.text !== '')
+  const item = list[index - 1]
+  if (item === undefined) return `捨てた候補 ${index} 番はありません。`
+  const section = isSection(item.section) ? item.section : 'Domain Knowledge'
+  const candidate: Candidate = {
+    id: 'adopt',
+    section,
+    text: item.text,
+    evidence: `（捨てた候補から人が採用: ${item.reason}）`,
+    evidenceKind: 'user-correction',
+  }
+  const result = await writeCandidates(
+    $,
+    {
+      file: s.file,
+      dir: dirOf(s.file),
+      repoKey: s.repoKey,
+      sessionId: await $.session.id(),
+      // 人の採用なので判定は通さない。同じ行の重複だけ writer が落とす
+      rejudge: async cands => new Map(cands.map(c => [c.id, { verdict: 'auto' as const, reason: 'adopted' }])),
+      branchConfigured: options.defaultBranch,
+      fromPending: false,
+    },
+    [candidate],
+  )
+  if (result.written.length > 0) {
+    await removeDiscarded($, s.repoKey, item.key)
+    await noteWritten($, result.written, false)
+    return `採用しました: [${section}] ${item.text}`
+  }
+  if (result.pending.length > 0) {
+    await setPending($, s.repoKey, [...(await getPending($, s.repoKey)), ...result.pending])
+    return `保留にしました（${result.note ?? ''}）`
+  }
+  return `採用できませんでした（${result.dropped.map(d => d.detail ?? d.reason).join(', ')}）`
+}
+
+async function initFile($: EngineInterface, cwd: string, fix: boolean): Promise<string> {
+  const repo = await $.session.repo().catch(() => null)
+  const root = repo?.root ?? cwd
+  const path = `${root}/${FILE_NAME}`
+  const exists = await $.fs.exists(path).catch(() => false)
+  if (exists) {
+    const text = (await readFile($, path)) ?? ''
+    const parsed = parse(text)
+    if (parsed.ok) return `${path} はすでにあります（5見出し揃っています）。`
+    if (parsed.reason === 'conflict-markers') return `${path} に競合マーカーがあります。解消してから実行してください。`
+    const missing = parsed.missing ?? []
+    if (!fix) {
+      return [
+        `${path} はありますが、見出しが足りません: ${missing.join(', ')}`,
+        '末尾に足してよければ `/learnings init --fix` を実行してください。',
+      ].join('\n')
+    }
+    const extra = missing.map(h => `\n## ${h}\n`).join('')
+    await $.fs.write(path, text.replace(/\s*$/, '\n') + extra)
+  } else {
+    const template = await readFile($, `${$.plugin.root}/templates/${FILE_NAME}`)
+    if (template === undefined) return 'テンプレートを読めませんでした。'
+    await $.fs.write(path, template)
+  }
+  await detect($, cwd)
+  return `${path} を${exists ? '補修' : '作成'}しました。このセッションから学びを記録します。`
+}
+
+async function statusText($: EngineInterface): Promise<string> {
+  const s = await read($, sessionAtom)
+  const text = s.file !== null ? await readFile($, s.file) : undefined
+  const ex = await read($, extractionAtom)
+  const last = text !== undefined ? lastConsolidated(text) : undefined
+  const usage = await $.session.usage().catch(() => undefined)
+  return formatStatus({
+    file: s.file,
+    observations: text !== undefined ? countObservations(text) : 0,
+    lastConsolidated: last,
+    daysSince: last !== undefined ? daysBetween(localDate(await $.clock.now()), last) : undefined,
+    extraction: { runs: ex.runs, usage: ex.usage, isPending: ex.isPending, isRunning: ex.isRunning },
+    rateLimits: usage?.rateLimits ?? [],
+    appended: s.repoKey !== null ? await getAppended($, s.repoKey) : [],
+    pending: s.repoKey !== null ? await getPending($, s.repoKey) : [],
+    discarded: s.repoKey !== null ? await getDiscarded($, s.repoKey) : [],
+    thresholds: { count: options.noticeCount, days: options.noticeDays },
+  })
+}
+
+async function runCommand($: EngineInterface, args: string): Promise<string> {
+  const [verb = '', arg = ''] = args.trim().split(/\s+/)
+  const s = await read($, sessionAtom)
+
+  if (verb === 'init') return initFile($, await $.session.cwd(), arg === '--fix')
+
+  if (verb === 'now') {
+    if (s.file === null) return 'LEARNINGS.md がありません。`/learnings init` で作れます。'
+    return extractNow($, true)
+  }
+
+  if (verb === 'undo') {
+    if (s.repoKey === null) return 'LEARNINGS.md がありません。'
+    const n = arg === '' ? 1 : Number.parseInt(arg, 10)
+    const list = [...(await getAppended($, s.repoKey))].reverse()
+    const rec = list[n - 1]
+    if (!Number.isInteger(n) || n < 1 || rec === undefined) {
+      return `取り消す追記 ${arg || 1} 番はありません。\`/learnings\` で番号を確認してください。`
+    }
+    return undoRecord($, rec)
+  }
+
+  if (verb === 'adopt') {
+    const n = Number.parseInt(arg, 10)
+    if (!Number.isInteger(n) || n < 1) return '`/learnings adopt <番号>` の形で指定してください。番号は `/learnings` の「捨てた候補」の一覧。'
+    return adoptDiscarded($, n)
+  }
+
+  if (verb !== '') return `不明な引数: ${verb}。使えるのは now / undo [n] / adopt <n> / init`
+  return statusText($)
+}
+
+// ---- 配線 ---------------------------------------------------------------------
+
+export const register: Register = (on, rawOptions) => {
+  options = readOptions(rawOptions)
+
+  on('session.start', async ($, e, next) => {
+    turn = { edits: 0, errors: 0, editedLearnings: false }
+    criteriaText = (await readFile($, `${$.plugin.root}/criteria/CRITERIA.md`)) ?? ''
+
+    await $.command.register({
+      name: 'learnings',
+      description: 'learnings-loop の状況・取り消し・今すぐ抽出・LEARNINGS.md の作成',
+      argumentHint: '[now|undo [n]|adopt <n>|init]',
+    })
+
+    await detect($, e.cwd)
+
+    // 作業ブランチで保留していた分を、最新のファイルに対して再判定して書く
+    await consumePending($).catch(err => $.ui.log(`consumePending: ${String(err)}`, { to: 'debug' }))
+
+    // 抽出は turn.complete の中でなく、session.start 由来のタイマーから走らせる（V5）
+    poller?.cancel()
+    poller = $.clock.every(1500, () => {
+      void extractNow($, false).catch(err => $.ui.log(`extract: ${String(err)}`, { to: 'debug' }))
+    })
+
+    return next(e)
+  })
+
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      await update($, extractionAtom, x => ({ ...x, processedUpTo: 0, isPending: false }))
+      await update($, appendedAtom, () => ({ count: 0, fromPending: 0 }))
+      await update($, sessionAtom, s => ({ ...s, hasPrompted: false }))
+      turn = { edits: 0, errors: 0, editedLearnings: false }
+    }
+    return next(e)
+  })
+
+  // 会話圧縮の後は、フォークから見える範囲と処理済み位置が一致しないのでリセット
+  on('session.compact', async ($, e, next) => {
+    const r = await next(e)
+    if (e.agentId === undefined) {
+      const turns = await $.session.turns().catch(() => 0)
+      await update($, extractionAtom, x => ({ ...x, processedUpTo: turns }))
+    }
+    return r
+  })
+
+  // 原則の注入（セッション開始時点の内容で固定）
+  on('prompt.compose', async ($, e, next) => {
+    const r = await next(e)
+    const s = await read($, sessionAtom)
+    if (s.file === null || !options.injectPrinciples) return r
+    const text = [
+      '# Project learnings (learnings-loop)',
+      principlesText !== '' ? `## Consolidated Principles\n${principlesText}` : '（まだ原則はありません）',
+      '',
+      `生の観察 ${observationsAtStart} 件が \`${s.file}\` にある。関係しそうな作業の前に grep して参照せよ。`,
+      '学びの記録は learnings-loop が自動で行う。明示的に頼まれない限り、自分で LEARNINGS.md に追記しない。',
+    ].join('\n')
+    return { sections: [...r.sections, { id: SECTION_ID, text, scope: 'session' as const }] }
+  })
+
+  // 観察
+  on('turn.start', ($, e, next) => {
+    if (e.agentId === undefined) turn = { edits: 0, errors: 0, editedLearnings: false }
+    return next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    if (!e.isMeta) await update($, sessionAtom, s => (s.hasPrompted ? s : { ...s, hasPrompted: true }))
+    return next(e)
+  })
+
+  on('tool.call', async ($, e, next) => {
+    const ran = await next(e)
+    if (e.agentId !== undefined) return ran
+    const tool = String(e.tool)
+    const isError = ran.deny === undefined && ran.isError === true
+    if (isError) turn.errors++
+    else if (EDIT_TOOLS.has(tool) && ran.deny === undefined) {
+      turn.edits++
+      const path = (e as { file_path?: unknown }).file_path
+      if (typeof path === 'string' && path.endsWith(`/${FILE_NAME}`)) turn.editedLearnings = true
+    }
+    return ran
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined && !e.isAborted && options.extraction === 'auto') {
+      const s = await read($, sessionAtom)
+      if (s.file !== null && (turn.edits > 0 || turn.errors > 0)) {
+        await update($, extractionAtom, x => ({ ...x, isPending: true }))
+      }
+    }
+    return next(e)
+  })
+
+  // 帯: 知らせるだけ。判断は /learnings
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || e.props.isWorking) return next(e)
+    const s = await read($, sessionAtom)
+    if (s.file === null) return next(e)
+    const appended = await read($, appendedAtom)
+    const notice = await read($, noticeAtom)
+    const showAppended = appended.count + appended.fromPending > 0
+    const showNotice = notice.isDue && !notice.isDismissed && !s.hasPrompted
+    if (!showAppended && !showNotice) return next(e)
+
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const parts: string[] = []
+    if (showAppended) {
+      const n = appended.count + appended.fromPending
+      parts.push(appended.fromPending > 0 && appended.count === 0 ? `保留していた ${n}件を追記` : `今セッション ${n}件追記`)
+    }
+    if (showNotice) {
+      const days = notice.daysSince !== undefined ? ` ・ 統合から ${notice.daysSince}日` : ''
+      parts.push(`観察 ${notice.observations}件${days}`)
+    }
+    return (
+      <Box>
+        <Text dimColor>📚 {parts.join(' ・ ')} </Text>
+        {showAppended && appended.last !== undefined && (
+          <Button
+            key="undo"
+            plain
+            hotkey="u"
+            label="取り消し"
+            onPress={() => {
+              void undoLast($).then(msg => $.ui.toast(msg))
+            }}
+          />
+        )}
+        {showAppended && <Text dimColor> /learnings 詳細 </Text>}
+        {showNotice && (
+          <Button
+            key="consolidate"
+            plain
+            hotkey="c"
+            label="統合する"
+            onPress={() => {
+              void update($, noticeAtom, n => ({ ...n, isDismissed: true }))
+              void $.prompt.submit({ text: CONSOLIDATE_PROMPT })
+            }}
+          />
+        )}
+        {showNotice && (
+          <Button
+            key="dismiss"
+            plain
+            hotkey="x"
+            label="閉じる"
+            onPress={() => {
+              void update($, noticeAtom, n => ({ ...n, isDismissed: true }))
+            }}
+          />
+        )}
+        <Text dimColor> (ctrl+x tab で帯を選択)</Text>
+      </Box>
+    )
+  })
+
+  on('command.run', { command: 'learnings' }, async ($, e) => ({ text: await runCommand($, e.args) }))
+}

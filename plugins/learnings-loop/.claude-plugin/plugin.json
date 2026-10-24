@@ -1,0 +1,74 @@
+{
+  "name": "learnings-loop",
+  "description": "（試験中）LEARNINGS.md の学びを、編集やエラーのあったターンの直後に裏で抽出して自動追記する Mod。取り消し・保留・統合の案内つき。",
+  "author": {
+    "name": "FukaseDaichi"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "extraction": {
+      "type": "string",
+      "title": "抽出",
+      "description": "auto: 編集やエラーのあったターンの直後に裏で抽出する。manual: /learnings now のときだけ。",
+      "default": "auto",
+      "options": [
+        "auto",
+        "manual"
+      ]
+    },
+    "maxCandidates": {
+      "type": "number",
+      "title": "1回の抽出の候補上限",
+      "description": "フォークに返させる候補の最大件数。",
+      "default": 3
+    },
+    "sessionCap": {
+      "type": "number",
+      "title": "1セッションの自動追記上限",
+      "description": "超えた分は自動判定済みのまま保留し、次のセッション開始時に書く。",
+      "default": 3
+    },
+    "minInterval": {
+      "type": "number",
+      "title": "抽出の最低間隔（ターン）",
+      "description": "前回の抽出から何ターン空けるか。0 は毎回（D9）。レート制限枠の消費が重ければ増やす。",
+      "default": 0
+    },
+    "noticeCount": {
+      "type": "number",
+      "title": "統合の案内: 件数しきい値",
+      "description": "生の観察がこの件数以上なら、セッション開始時の帯で統合を案内する。",
+      "default": 80
+    },
+    "noticeDays": {
+      "type": "number",
+      "title": "統合の案内: 日数しきい値",
+      "description": "最終統合からこの日数を超えたら案内する。",
+      "default": 7
+    },
+    "injectPrinciples": {
+      "type": "boolean",
+      "title": "原則の注入",
+      "description": "Consolidated Principles をシステムプロンプトに足す（セッション開始時点で固定）。",
+      "default": true
+    },
+    "defaultBranch": {
+      "type": "string",
+      "title": "既定ブランチ",
+      "description": "空なら origin/HEAD → main → master → 今のブランチの順で決める。'*' ならどのブランチでも書く。",
+      "default": ""
+    },
+    "maxChars": {
+      "type": "number",
+      "title": "本文の文字数上限",
+      "description": "候補の本文がこれを超えたら捨てる。",
+      "default": 200
+    },
+    "judgeModel": {
+      "type": "string",
+      "title": "判定モデル",
+      "description": "2段目（分類と重複確認）に使う小さいモデルの別名か ID。",
+      "default": "haiku"
+    }
+  }
+}

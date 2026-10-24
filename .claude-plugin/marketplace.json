@@ -1,13 +1,27 @@
 {
   "name": "claude-kit",
-  "owner": { "name": "FukaseDaichi" },
-  "metadata": { "description": "FukaseDaichi の Claude Code 用スキル・Mod・エージェント集" },
+  "owner": {
+    "name": "FukaseDaichi"
+  },
+  "metadata": {
+    "description": "FukaseDaichi の Claude Code 用スキル・Mod・エージェント集"
+  },
   "plugins": [
     {
       "name": "git-band",
       "description": "入力欄の上に git の状態を出し、pull をボタン1つで実行、コミットと push は Claude に依頼する帯（Mod）",
-      "author": { "name": "FukaseDaichi" },
+      "author": {
+        "name": "FukaseDaichi"
+      },
       "source": "./plugins/git-band"
+    },
+    {
+      "name": "learnings-loop",
+      "description": "（試験中）LEARNINGS.md の学びを、編集やエラーのあったターンの直後に裏で抽出して自動追記する Mod。取り消し・保留・統合の案内つき。",
+      "author": {
+        "name": "FukaseDaichi"
+      },
+      "source": "./plugins/learnings-loop"
     }
   ]
 }

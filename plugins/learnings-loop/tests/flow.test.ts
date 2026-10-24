@@ -1,0 +1,263 @@
+// フック全体の流れ。テストの `on` はプラグインの下に立ち、エンジンの代わりに答える。
+
+import { expect, mock, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+
+const ROOT = '/repo'
+const FILE = `${ROOT}/LEARNINGS.md`
+
+const INITIAL = `# Project Learnings
+
+<!--
+- 最終統合: 2026-10-01
+-->
+
+## Patterns That Work
+（効いたやり方・型）
+
+- 2026-10-02: 既存のA
+
+## Mistakes to Avoid
+（失敗と再発防止）
+
+## Domain Knowledge
+（業務・仕様の知識）
+
+## Open Questions
+（未解決の疑問）
+
+## Consolidated Principles
+
+- 原則1
+`
+
+const FORK_REPLY = `候補です。
+\`\`\`json
+[
+  {
+    "section": "Mistakes to Avoid",
+    "text": "zsh では PIPESTATUS でなく pipestatus を使う",
+    "evidence": "echo \\"exit: \${PIPESTATUS[0]}\\" が空を出力した後、pipestatus で取れた",
+    "evidenceKind": "error-fixed-verified"
+  },
+  {
+    "section": "Patterns That Work",
+    "text": "たぶんこうすると速い",
+    "evidence": "",
+    "evidenceKind": "guess"
+  }
+]
+\`\`\``
+
+const JUDGE_REPLY = '[{"id":"c1","verdict":"auto","reason":"new and reusable"}]'
+
+type World = {
+  files: Map<string, string>
+  forks: string[]
+  completes: { model: string; prompt: string }[]
+  git: Record<string, string>
+}
+
+/** エンジンの代わり: ファイル・git・モデルを答える。 */
+function world(on: On, init: Partial<World> = {}): World {
+  const w: World = {
+    files: init.files ?? new Map([[FILE, INITIAL]]),
+    forks: [],
+    completes: [],
+    git: init.git ?? {},
+  }
+  on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
+  on('session.cwd', () => ({ value: ROOT }))
+  on('session.id', () => ({ value: 'test-session' }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }))
+  on('fs.exists', (_, e) => ({ value: w.files.has(e.path) }))
+  on('fs.read', (_, e) => {
+    const text = w.files.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT ${e.path}`)
+    return { value: text }
+  })
+  on('fs.write', (_, e) => {
+    w.files.set(e.path, e.text)
+    return { value: undefined }
+  })
+  on('process.run', (_, e) => {
+    const key = e.argv.slice(1).join(' ')
+    const out = w.git[key]
+    return { value: { exitCode: out === undefined ? 1 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('model.fork', (_, e) => {
+    w.forks.push(e.prompt)
+    return {
+      value: {
+        isAnswered: true,
+        text: FORK_REPLY,
+        usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 },
+      },
+    }
+  })
+  on('model.complete', (_, e) => {
+    w.completes.push({ model: e.model, prompt: e.prompt })
+    return {
+      value: {
+        isAnswered: true,
+        text: JUDGE_REPLY,
+        usage: { input_tokens: 5, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 500 },
+      },
+    }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('tool.call', () => ({ result: {} }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'base', scope: 'shared' as const }] }))
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  return w
+}
+
+const ON_MAIN = { cwd: ROOT, surface: 'terminal' as const, isInteractive: true }
+
+test('session.start registers /learnings and injects the principles', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const w = world(on)
+  on('session.turns', () => ({ value: 0 }))
+
+  await $.session.start(ON_MAIN)
+
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  const section = composed.sections.find(s => s.id === 'learnings-loop:principles')
+  expect(section?.scope).toBe('session')
+  expect(section?.text).toContain('原則1')
+  expect(section?.text).toContain('自分で LEARNINGS.md に追記しない')
+
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('生の観察 1 件')
+  expect(w.forks.length).toBe(0)
+})
+
+test('an edit turn triggers a fork, a judge and one appended line', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  const w = world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' } })
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+
+  await $.session.start(ON_MAIN)
+
+  turns = 1
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+
+  // 抽出は turn.complete の中では走らず、タイマーから走る
+  expect(w.forks.length).toBe(0)
+  await clock.advance(2000)
+
+  expect(w.forks.length).toBe(1)
+  expect(w.forks[0]).toContain('直近の 1 回分')
+  expect(w.completes.length).toBe(1)
+  expect(w.completes[0]?.model).toBe('haiku')
+  expect(w.completes[0]?.prompt).toContain('<learnings_md>')
+
+  const text = w.files.get(FILE) ?? ''
+  expect(text).toContain('- 2026-10-22: zsh では PIPESTATUS でなく pipestatus を使う')
+  expect(text).not.toContain('たぶんこうすると速い')
+  expect(text).toContain('- 原則1')
+
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('生の観察 2 件')
+  expect(status.text).toContain('今セッションの抽出: 1 回')
+  expect(status.text).toContain('zsh では PIPESTATUS')
+
+  // 同じターンをもう一度は抽出しない
+  await clock.advance(2000)
+  expect(w.forks.length).toBe(1)
+})
+
+test('a read-only turn does not trigger extraction', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const w = world(on)
+  on('session.turns', () => ({ value: 1 }))
+
+  await $.session.start(ON_MAIN)
+  await $.turn.start({ text: 'look', turnId: 't1' })
+  await $.tool.call({ tool: 'Read', file_path: `${ROOT}/a.ts` })
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(5000)
+  expect(w.forks.length).toBe(0)
+})
+
+test('undo removes the appended line only while it is still there', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  const w = world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' } })
+  on('session.turns', () => ({ value: 1 }))
+
+  await $.session.start(ON_MAIN)
+  await $.turn.start({ text: 'fix', turnId: 't1' })
+  await $.tool.call({ tool: 'Write', file_path: `${ROOT}/b.ts`, content: 'x' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(2000)
+  expect(w.files.get(FILE)).toContain('pipestatus')
+
+  const undone = await $.command.run({ command: 'learnings', args: 'undo', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(undone.text).toContain('取り消しました')
+  expect(w.files.get(FILE)).toBe(INITIAL)
+
+  const again = await $.command.run({ command: 'learnings', args: 'undo', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(again.text).toContain('すでに取り消し済み')
+
+  // 捨てた候補に入り、採用し直せる
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('取り消し')
+  const adopted = await $.command.run({ command: 'learnings', args: 'adopt 1', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(adopted.text).toContain('採用しました')
+  expect(w.files.get(FILE)).toContain('pipestatus')
+})
+
+test('on a work branch the candidate is held, then written on the default branch next session', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  const git: Record<string, string> = { 'rev-parse --abbrev-ref HEAD': 'feature/x', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' }
+  const w = world(on, { git })
+  on('session.turns', () => ({ value: 1 }))
+
+  await $.session.start(ON_MAIN)
+  await $.turn.start({ text: 'fix', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(2000)
+
+  expect(w.files.get(FILE)).toBe(INITIAL)
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('保留中（1 件')
+  expect(status.text).toContain('ブランチ feature/x')
+
+  // 既定ブランチに戻って次のセッション: 再判定して書く
+  git['rev-parse --abbrev-ref HEAD'] = 'main'
+  const judgeCalls = w.completes.length
+  await $.session.start(ON_MAIN)
+  expect(w.completes.length).toBe(judgeCalls + 1)
+  expect(w.files.get(FILE)).toContain('- 2026-10-22: zsh では PIPESTATUS でなく pipestatus を使う')
+  const after = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(after.text).not.toContain('保留中')
+  expect(after.text).toContain('[保留分]')
+})
+
+test('without a LEARNINGS.md the mod stays quiet and /learnings points at init', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const w = world(on, { files: new Map([[`/plugin/templates/LEARNINGS.md`, INITIAL]]) })
+  on('session.turns', () => ({ value: 1 }))
+
+  await $.session.start(ON_MAIN)
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  expect(composed.sections.some(s => s.id === 'learnings-loop:principles')).toBe(false)
+
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('/learnings init')
+  expect(w.forks.length).toBe(0)
+})
