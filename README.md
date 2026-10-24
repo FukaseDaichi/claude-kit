@@ -8,7 +8,7 @@ FukaseDaichi の Claude Code 用スキル・Mod・エージェント集。リポ
 | --- | --- | --- |
 | [git-band](plugins/git-band/) | Mod | 入力欄の上に git の状態（ブランチ／未コミット／未 push／追加の worktree）を出し、pull をボタン1つで実行、コミットと push は Claude に依頼する |
 
-## 使う（ほかの人・ほかの PC）
+## 使う（自分の PC も、ほかの人も同じ）
 
 ```bash
 claude plugin marketplace add FukaseDaichi/claude-kit
@@ -17,21 +17,33 @@ claude plugin install git-band@claude-kit --scope user -y
 
 Desktop アプリでは、プロンプト欄の横の + → Plugins → Add marketplace で `FukaseDaichi/claude-kit` を追加し、Add plugin から入れる。
 
-- 更新: `claude plugin update git-band@claude-kit`。自動で受け取るには `/plugin` → Marketplaces → claude-kit → **Enable auto-update**（セッション開始後、最大10分ほどで反映）
+自動更新をオンにする（どちらか）:
+
+- `/plugin` → Marketplaces → claude-kit → **Enable auto-update**
+- `~/.claude/settings.json` の `extraKnownMarketplaces` に書く:
+
+  ```json
+  "claude-kit": {
+    "source": { "source": "github", "repo": "FukaseDaichi/claude-kit" },
+    "autoUpdate": true
+  }
+  ```
+
+オンにすると、セッションで最初のメッセージを送ってから最大10分ほどで新しい版が入る（開いているセッションは `/reload-plugins`、次のセッションからは自動で反映）。今すぐ欲しいときは `/plugin` → Marketplaces → claude-kit → **Update marketplace**（claude-kit の全プラグインをまとめて更新）。
+
 - `plugin.json` に `version` を書いていないので、commit ごとに新しい版として扱われる
 - Mod は Claude Code v2.1.287 以降が必要。帯やペインはターミナルと Desktop アプリの Code タブで描画される（`claude -p`・Agent SDK では描画されない）
 
-## メンテする（自分の PC）
+## メンテする
 
-clone したフォルダをそのままマーケットプレイスとして登録する。フォルダから直接読み込まれるので、更新は `git pull` → 開いているセッションで `/reload-plugins` だけでよい（再インストール不要）。
+ふだん使うのは上の GitHub から入れた版。編集は clone した作業用フォルダで行い、push するまでは次の方法で手元の版を試す。
 
 ```bash
-git clone https://github.com/FukaseDaichi/claude-kit.git ~/git/claude-kit
-claude plugin marketplace add ~/git/claude-kit
-claude plugin install git-band@claude-kit --scope user -y
+git clone https://github.com/FukaseDaichi/claude-kit.git ~/git/claude-kit   # 初回だけ
+claude --plugin-dir ~/git/claude-kit/plugins/git-band                       # 手元の版で起動して試す
 ```
 
-どの PC で直しても commit → push すれば、もう一方は `git pull` で受け取れる。
+`--plugin-dir` で読み込んだ版は、そのセッションだけ同じ名前の入れてあるプラグインに置き換わる。編集は保存するたびに読み込み直される。試して良ければ commit → push すれば、自動更新で全員（自分のほかの PC も）に届く。
 
 ## プラグインを足すとき
 
