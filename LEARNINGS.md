@@ -15,10 +15,13 @@
 ## Mistakes to Avoid
 （失敗と再発防止）
 
+- 2026-10-24: claude plugin test で turn.start をスタブするときは、on('turn.start', (_, e) => ({ turnId: e.turnId })) のように { turnId } を返す。({}) を返すと HooksError でテストが落ちる
+
 ## Domain Knowledge
 （業務・仕様・環境の知識）
 
 - 2026-10-24: Mod の prompt.compose フックは、先に動く別プラグイン（例: cc-plugin-sec-default）が next を通さないと飛ばされるので、システムプロンプトへの注入だけで Claude に大事な前提を伝える設計は当てにならない
+- 2026-10-24: Mod の tool.call フック（tool: 'Bash'）では、next(e) の結果 r.result.gitOperation?.push?.branch で Claude の git push の成功を検知できる。commit・pr も同じ場所に入るので、stdout を解析しなくてよい
 
 ## Open Questions
 （未解決の疑問）
