@@ -12,6 +12,8 @@
 ## Patterns That Work
 （効いたやり方・型）
 
+- 2026-10-25: Mod の型チェックは、tsc がなくても scratchpad に tsconfig（include に plugin-authoring スキルの claude-code.d.ts と plugins/<name>/hooks・types・tests）を置き、npx -y -p typescript@5.6.3 tsc -p <その tsconfig> で、ロード前の Mod でもできる
+
 ## Mistakes to Avoid
 （失敗と再発防止）
 
@@ -22,6 +24,7 @@
 
 - 2026-10-24: Mod の prompt.compose フックは、先に動く別プラグイン（例: cc-plugin-sec-default）が next を通さないと飛ばされるので、システムプロンプトへの注入だけで Claude に大事な前提を伝える設計は当てにならない
 - 2026-10-24: Mod の tool.call フック（tool: 'Bash'）では、next(e) の結果 r.result.gitOperation?.push?.branch で Claude の git push の成功を検知できる。commit・pr も同じ場所に入るので、stdout を解析しなくてよい
+- 2026-10-25: claude plugin test では $.plugin.root が実際のプラグインフォルダの絶対パスになるので、テストの fs.read スタブを '/plugin/templates/...' のような固定パスで引くと当たらない。末尾一致（endsWith('/templates/LEARNINGS.md')）で答えると通る
 
 ## Open Questions
 （未解決の疑問）
