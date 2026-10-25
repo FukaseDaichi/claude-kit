@@ -23,9 +23,11 @@ import {
 import { formatStatus } from './status'
 import {
   addDiscarded,
+  declineInit,
   getAppended,
   getDiscarded,
   getPending,
+  isInitDeclined,
   markUndone,
   PENDING_TTL_MS,
   removeDiscarded,
@@ -48,6 +50,7 @@ const CONSOLIDATE_PROMPT =
 const sessionAtom = atom({ plugin: 'learnings-loop', key: 'session' } as const, {
   file: null,
   repoKey: null,
+  initOfferFor: null,
   hasPrompted: false,
 } as LearningsSession)
 const appendedAtom = atom({ plugin: 'learnings-loop', key: 'appended' } as const, { count: 0, fromPending: 0 } as LearningsAppended)
@@ -71,6 +74,7 @@ type Options = {
   noticeCount: number
   noticeDays: number
   injectPrinciples: boolean
+  offerInit: boolean
   maxChars: number
   judgeModel: string
 }
@@ -86,6 +90,7 @@ function readOptions(o: PluginOptions): Options {
     noticeCount: num(o.noticeCount, 80),
     noticeDays: num(o.noticeDays, 7),
     injectPrinciples: bool(o.injectPrinciples, true),
+    offerInit: bool(o.offerInit, true),
     maxChars: num(o.maxChars, 200),
     judgeModel: str(o.judgeModel, 'haiku'),
   }
@@ -157,21 +162,32 @@ async function refreshNotice($: EngineInterface, text: string): Promise<void> {
   await update($, noticeAtom, n => ({ ...n, isDue, observations, daysSince }))
 }
 
+/** LEARNINGS.md のない Git リポジトリなら、init を案内してよいリポジトリの識別キーを返す。 */
+async function initOfferKey($: EngineInterface): Promise<string | null> {
+  if (!options.offerInit) return null
+  const repo = await $.session.repo().catch(() => null)
+  if (repo === null) return null
+  const key = await commonDir((argv, init) => $.process.run(argv, init), repo.root)
+  if (key === undefined || (await isInitDeclined($, key))) return null
+  return key
+}
+
 async function detect($: EngineInterface, cwd: string): Promise<void> {
   const file = await findLearnings($, cwd)
   if (file === null) {
-    await update($, sessionAtom, s => ({ ...s, file: null, repoKey: null }))
+    const initOfferFor = await initOfferKey($)
+    await update($, sessionAtom, s => ({ ...s, file: null, repoKey: null, initOfferFor }))
     return
   }
   const text = await readFile($, file)
   const parsed = text !== undefined ? parse(text) : undefined
   if (text === undefined || parsed === undefined || !parsed.ok) {
     $.ui.log(`${file}: ${parsed?.ok === false ? parsed.reason : 'unreadable'}; doing nothing`, { to: 'debug' })
-    await update($, sessionAtom, s => ({ ...s, file: null, repoKey: null }))
+    await update($, sessionAtom, s => ({ ...s, file: null, repoKey: null, initOfferFor: null }))
     return
   }
   const key = (await commonDir((argv, init) => $.process.run(argv, init), dirOf(file))) ?? file
-  await update($, sessionAtom, s => ({ ...s, file, repoKey: key }))
+  await update($, sessionAtom, s => ({ ...s, file, repoKey: key, initOfferFor: null }))
   principlesText = principles(text)
   observationsAtStart = countObservations(text)
   await refreshNotice($, text)
@@ -582,11 +598,46 @@ export const register: Register = (on, rawOptions) => {
     return next(e)
   })
 
-  // 帯: 知らせるだけ。判断は /learnings
+  // 帯: 知らせるだけ。判断は /learnings。LEARNINGS.md がなければ、最初のプロンプトまで init を案内する
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || e.props.isWorking) return next(e)
     const s = await read($, sessionAtom)
-    if (s.file === null) return next(e)
+    if (s.file === null) {
+      const repoKey = s.initOfferFor
+      if (repoKey === null || s.hasPrompted) return next(e)
+      const { Box, Button, Text } = $.ui.resolve(e)
+      return stack(
+        $,
+        e,
+        await next(e),
+        <Box>
+          <Text dimColor>📚 このリポジトリに LEARNINGS.md がありません </Text>
+          <Button
+            key="init"
+            plain
+            hotkey="i"
+            label="作って学びを記録する"
+            onPress={() => {
+              void $.session
+                .cwd()
+                .then(cwd => initFile($, cwd, false))
+                .then(msg => $.ui.toast(msg))
+            }}
+          />
+          <Button
+            key="declineInit"
+            plain
+            hotkey="n"
+            label="このリポジトリでは聞かない"
+            onPress={() => {
+              void declineInit($, repoKey)
+              void update($, sessionAtom, x => ({ ...x, initOfferFor: null }))
+            }}
+          />
+          <Text dimColor> (ctrl+x tab で帯を選択)</Text>
+        </Box>,
+      )
+    }
     const appended = await read($, appendedAtom)
     const notice = await read($, noticeAtom)
     const showAppended = appended.count + appended.fromPending > 0

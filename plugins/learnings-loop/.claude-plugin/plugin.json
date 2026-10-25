@@ -46,6 +46,12 @@
       "description": "Consolidated Principles をシステムプロンプトに足す（セッション開始時点で固定）。",
       "default": true
     },
+    "offerInit": {
+      "type": "boolean",
+      "title": "init の案内",
+      "description": "LEARNINGS.md のない Git リポジトリで、セッション開始時の帯で作成を案内する。",
+      "default": true
+    },
     "maxChars": {
       "type": "number",
       "title": "本文の文字数上限",

@@ -120,6 +120,15 @@ export async function markUndone($: EngineInterface, repoKey: string, id: string
   return rec
 }
 
+/** init の案内に「このリポジトリでは聞かない」と答えたか。 */
+export async function isInitDeclined($: EngineInterface, repoKey: string): Promise<boolean> {
+  return (await $.store.get(k(repoKey, 'initDeclined'))) === true
+}
+
+export async function declineInit($: EngineInterface, repoKey: string): Promise<void> {
+  await $.store.set(k(repoKey, 'initDeclined'), true)
+}
+
 /** 2段目に渡す「捨てた候補」の本文一覧（機密は除く）。 */
 export function discardedTexts(list: readonly DiscardedCandidate[]): string[] {
   return list.filter(d => d.text !== '').map(d => d.text)

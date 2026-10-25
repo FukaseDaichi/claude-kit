@@ -23,7 +23,9 @@ export type LearningsSession = {
   file: string | null
   /** リポジトリの識別キー（git-common-dir の実パス、なければファイルの実パス） */
   repoKey: string | null
-  /** 最初のプロンプトがもう送られたか（統合の案内は送られる前だけ） */
+  /** LEARNINGS.md のない Git リポジトリで init を案内するときの、そのリポジトリの識別キー。案内しないなら null */
+  initOfferFor: string | null
+  /** 最初のプロンプトがもう送られたか（統合と init の案内は送られる前だけ） */
   hasPrompted: boolean
 }
 

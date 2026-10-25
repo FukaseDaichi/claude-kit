@@ -20,11 +20,13 @@ claude plugin marketplace add FukaseDaichi/claude-kit
 claude plugin install learnings-loop@claude-kit --scope user
 ```
 
-その後、学びを貯めたいリポジトリで `/learnings init` を実行して `LEARNINGS.md` を作ります。
+その後、`LEARNINGS.md` のない Git リポジトリでセッションを始めると、帯に `📚 このリポジトリに LEARNINGS.md がありません` と出ます。
+`[i 作って学びを記録する]` で作られ、そのセッションから記録が始まります。`[n このリポジトリでは聞かない]` を押したリポジトリでは、次から出ません。
+帯は最初のプロンプトを送ると消えます。あとから作るときは `/learnings init` を打ちます。
 
 **条件**: Claude Code 2.1.287 以上。リポジトリに5見出し（`## Patterns That Work` / `## Mistakes to Avoid` /
 `## Domain Knowledge` / `## Open Questions` / `## Consolidated Principles`）の `LEARNINGS.md` があること。
-なければ Mod は何もしません（`/learnings` を打つと `init` を案内します）。
+なければ追記はせず、上の案内を出すだけです。
 
 ## 何が起きるか
 
@@ -102,6 +104,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 | 抽出の最低間隔（ターン） | 0 |
 | 統合の案内: 件数 / 日数 | 80 / 7 |
 | 原則の注入 | on |
+| init の案内 | on（off = `LEARNINGS.md` のないリポジトリでも帯に出さない） |
 | 本文の文字数上限 | 200 |
 | 判定モデル | haiku |
 

@@ -5,6 +5,7 @@ import type { On } from 'claude-code'
 
 const ROOT = '/repo'
 const FILE = `${ROOT}/LEARNINGS.md`
+const TEMPLATE = '/plugin/templates/LEARNINGS.md'
 
 const INITIAL = `# Project Learnings
 
@@ -74,7 +75,8 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }))
   on('fs.exists', (_, e) => ({ value: w.files.has(e.path) }))
   on('fs.read', (_, e) => {
-    const text = w.files.get(e.path)
+    // テンプレートは、プラグインがどこに置かれていても TEMPLATE で答える
+    const text = w.files.get(e.path.endsWith('/templates/LEARNINGS.md') ? TEMPLATE : e.path)
     if (text === undefined) throw new Error(`ENOENT ${e.path}`)
     return { value: text }
   })
@@ -369,7 +371,7 @@ test('a turn where Claude edited LEARNINGS.md itself is not extracted', async ($
 test('without a LEARNINGS.md the mod stays quiet and /learnings points at init', async ($, on) => {
   mock.clock(on)
   mock.store(on)
-  const w = world(on, { files: new Map([[`/plugin/templates/LEARNINGS.md`, INITIAL]]) })
+  const w = world(on, { files: new Map([[TEMPLATE, INITIAL]]) })
   on('session.turns', () => ({ value: 1 }))
 
   await $.session.start(ON_MAIN)
@@ -379,4 +381,78 @@ test('without a LEARNINGS.md the mod stays quiet and /learnings points at init',
   const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   expect(status.text).toContain('/learnings init')
   expect(w.forks.length).toBe(0)
+})
+
+const BAND = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} }
+const IN_REPO = { 'rev-parse --path-format=absolute --git-common-dir': '/repo/.git' }
+
+test('in a git repository without LEARNINGS.md the band offers init, and pressing it creates the file', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const w = world(on, { files: new Map([[TEMPLATE, INITIAL]]), git: IN_REPO })
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+
+  await $.session.start(ON_MAIN)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface, props: BAND })
+    expect((await ui.find({ type: 'Text', text: /LEARNINGS.md がありません/ }))?.text).toContain('LEARNINGS.md がありません')
+    expect(await ui.find({ key: 'init' })).toBeDefined()
+    expect(await ui.find({ key: 'declineInit' })).toBeDefined()
+    await ui.unmount()
+  }
+
+  const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  await ui.press({ key: 'init' })
+  expect(w.files.get(FILE)).toBe(INITIAL)
+  expect(await ui.find({ key: 'init' })).toBeUndefined()
+  await ui.unmount()
+
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('/repo/LEARNINGS.md')
+})
+
+test('"do not ask in this repository" is remembered across sessions', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on, { files: new Map(), git: IN_REPO })
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+
+  await $.session.start(ON_MAIN)
+  const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  await ui.press({ key: 'declineInit' })
+  expect(await ui.find({ key: 'init' })).toBeUndefined()
+  await ui.unmount()
+
+  await $.session.start(ON_MAIN)
+  const again = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect(await again.find({ key: 'init' })).toBeUndefined()
+  await again.unmount()
+})
+
+test('no init offer outside a git repository, or with the option off', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on, { files: new Map() })
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+
+  await $.session.start(ON_MAIN)
+  const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect(await ui.find({ key: 'init' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the init offer can be switched off in /config', { options: { offerInit: false } }, async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on, { files: new Map(), git: IN_REPO })
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+
+  await $.session.start(ON_MAIN)
+  const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect(await ui.find({ key: 'init' })).toBeUndefined()
+  await ui.unmount()
 })
