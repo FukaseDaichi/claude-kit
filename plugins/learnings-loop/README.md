@@ -21,7 +21,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 ```
 
 その後、`LEARNINGS.md` のない Git リポジトリでセッションを始めると、帯に `📚 このリポジトリに LEARNINGS.md がありません` と出ます。
-**作って学びを記録する** を押すと作られ、そのセッションから記録が始まります。**このリポジトリでは聞かない** を押したリポジトリでは、次から出ません。
+**📝 作って学びを記録する** を押すと作られ、そのセッションから記録が始まります。**このリポジトリでは聞かない** を押したリポジトリでは、次から出ません。
 帯は最初のプロンプトを送ると消えます。あとから作るときは `/learnings init` を打ちます。
 
 **条件**: Claude Code 2.1.287 以上。リポジトリに5見出し（`## Patterns That Work` / `## Mistakes to Avoid` /
@@ -36,7 +36,7 @@ claude plugin install learnings-loop@claude-kit --scope user
    - コードで検証: セクション名・1行・200字以内・根拠あり・機密情報なし。根拠が「推測」「直したが未確認」の候補は捨てる
    - 2段目: 小さいモデル（既定 `haiku`）が、既存の `LEARNINGS.md` と「捨てた候補」に照らして **auto / drop** に振り分ける
 3. `auto` の候補は、**今いるブランチ（worktree ならその worktree）の** `LEARNINGS.md` の該当セクションの末尾に `- YYYY-MM-DD: 本文` を1行足す。件数の上限はない
-4. 帯（入力欄の上）に `📚 観察 12件 ・ 今セッション +2  [📖 追記内容を見る] [✨ 学びを反映]` と出る（Claude が作業中は隠れる）
+4. 帯（入力欄の上）に `📚 学び · 観察 12件 · 今セッション +2   [📖 追記内容を見る] [✨ 学びを反映]` と出る（Claude が作業中は隠れる）
    - **📖 追記内容を見る**: `/learnings` と同じ内容（追記した行と根拠など）が会話に出る（Claude には送られない）
    - **✨ 学びを反映**: Claude に `learnings-loop:consolidate-learnings` を頼み、生の観察を原則にまとめ、恒常的なルールは指示ファイルやスキルへ移す。押すと音が鳴り、終わるまで帯が「✨ 学びを反映しています…」になり、終わるとチャイムと通知で知らせる（音は macOS だけ）
 5. 追記は未 commit のまま作業ツリーに残る。commit したいときに `/learnings commit` を打つと、`LEARNINGS.md` だけを別の commit にする

@@ -496,12 +496,27 @@ function playSound($: EngineInterface, asset: string): void {
   void $.audio.play({ asset }).catch(err => $.ui.log(`sound: ${String(err)}`, { to: 'debug' }))
 }
 
-/** 帯は全 Mod で1本。下の Mod が描いた行（below）があれば消さずに自分の行の下へ積む */
+/** 帯の行の形（git-band と揃える）: 左に 📚・名前・薄い詳細、右端にボタン */
+function bandRow($: EngineInterface, e: RenderInput, details: string, actions: RenderElement): RenderElement {
+  const { Box, Text } = $.ui.resolve(e)
+  return (
+    <Box width="100%" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap="md">
+      <Box columnGap="xs">
+        <Text>📚</Text>
+        <Text bold>学び</Text>
+        <Text dimColor>· {details}</Text>
+      </Box>
+      {actions}
+    </Box>
+  )
+}
+
+/** 帯は全 Mod で1本。下の Mod が描いた行（below）があれば消さずに、少し間を空けて自分の行の下へ積む */
 function stack($: EngineInterface, e: RenderInput, below: RenderElement, mine: RenderElement): RenderElement {
   if (below.type === 'engine') return mine
   const { Box } = $.ui.resolve(e)
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" rowGap="sm">
       {mine}
       {below}
     </Box>
@@ -623,34 +638,38 @@ export const register: Register = (on, rawOptions) => {
     if (s.file === null) {
       const repoKey = s.initOfferFor
       if (repoKey === null || s.hasPrompted || e.props.isWorking) return next(e)
-      const { Box, Button, Text } = $.ui.resolve(e)
+      const { Box, Button } = $.ui.resolve(e)
       return stack(
         $,
         e,
         await next(e),
-        <Box>
-          <Text dimColor>📚 このリポジトリに LEARNINGS.md がありません </Text>
-          <Button
-            key="init"
-            plain
-            label="作って学びを記録する"
-            onPress={() => {
-              void $.session
-                .cwd()
-                .then(cwd => initFile($, cwd, false))
-                .then(msg => $.ui.toast(msg))
-            }}
-          />
-          <Button
-            key="declineInit"
-            plain
-            label="このリポジトリでは聞かない"
-            onPress={() => {
-              void declineInit($, repoKey)
-              void update($, sessionAtom, x => ({ ...x, initOfferFor: null }))
-            }}
-          />
-        </Box>,
+        bandRow(
+          $,
+          e,
+          'このリポジトリに LEARNINGS.md がありません',
+          <Box columnGap="sm" alignItems="center">
+            <Button
+              key="init"
+              variant="primary"
+              label="📝 作って学びを記録する"
+              onPress={() => {
+                void $.session
+                  .cwd()
+                  .then(cwd => initFile($, cwd, false))
+                  .then(msg => $.ui.toast(msg))
+              }}
+            />
+            <Button
+              key="declineInit"
+              variant="secondary"
+              label="このリポジトリでは聞かない"
+              onPress={() => {
+                void declineInit($, repoKey)
+                void update($, sessionAtom, x => ({ ...x, initOfferFor: null }))
+              }}
+            />
+          </Box>,
+        ),
       )
     }
     const appended = await read($, appendedAtom)
@@ -658,19 +677,16 @@ export const register: Register = (on, rawOptions) => {
     if (e.props.isWorking && !notice.isReflecting) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    if (notice.isReflecting) {
-      return stack($, e, await next(e), <Text dimColor>✨ 学びを反映しています…</Text>)
-    }
     const n = appended.count + appended.fromPending
     const parts = [`観察 ${notice.observations}件`]
     if (n > 0) parts.push(appended.fromPending > 0 && appended.count === 0 ? `保留していた ${n}件を追記` : `今セッション +${n}`)
-    if (notice.isDue) parts.push(`そろそろ反映どき${notice.daysSince !== undefined ? `（前回から ${notice.daysSince}日）` : ''}`)
-    return stack(
-      $,
-      e,
-      await next(e),
-      <Box>
-        <Text dimColor>📚 {parts.join(' ・ ')} </Text>
+    if (notice.isDue && !notice.isReflecting) {
+      parts.push(`そろそろ反映どき${notice.daysSince !== undefined ? `（前回から ${notice.daysSince}日）` : ''}`)
+    }
+    const actions = notice.isReflecting ? (
+      <Text dimColor>✨ 学びを反映しています…</Text>
+    ) : (
+      <Box columnGap="sm" alignItems="center">
         <Button
           key="view"
           variant="secondary"
@@ -687,8 +703,9 @@ export const register: Register = (on, rawOptions) => {
             void reflect($).catch(err => $.ui.log(`reflect: ${String(err)}`, { to: 'debug' }))
           }}
         />
-      </Box>,
+      </Box>
     )
+    return stack($, e, await next(e), bandRow($, e, parts.join(' · '), actions))
   })
 
   on('command.run', { command: 'learnings' }, async ($, e) => ({ text: await runCommand($, e.args) }))
