@@ -176,45 +176,52 @@ export const register: Register = on => {
     const pushedBranch = await read($, pushedAtom)
 
     const { Box, Button, Text } = $.ui.resolve(e)
+    // 帯の行の形（learnings-loop と揃える）: 左にアイコン・名前・薄い詳細、右端にボタン
     const mine = (
-      <Box>
-        <Text bold>⎇ {status.branch ?? '(detached)'}</Text>
-        <Text dimColor> ・ {describe(status)} </Text>
-        {isPulling ? (
-          <Text dimColor> pull 中…</Text>
-        ) : (
-          canPull(status) && (
-            <Button
-              key="pull"
-              label="⬇ pull"
-              onPress={() => {
-                void pull($).catch(err => logError($, 'pull', err))
-              }}
-            />
-          )
-        )}
-        {pushedBranch !== null ? (
-          <Text color="success"> ✓ {pushedBranch} に push しました</Text>
-        ) : isShipping ? (
-          <Text dimColor> ⬆ コミット・push を依頼中…</Text>
-        ) : (
-          canShip(status) && (
-            <Button
-              key="ship"
-              variant="primary"
-              label="⬆ コミットして push"
-              onPress={() => {
-                void ship($).catch(err => logError($, 'ship', err))
-              }}
-            />
-          )
-        )}
+      <Box width="100%" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap="md">
+        <Box columnGap="xs">
+          <Text>⎇</Text>
+          <Text bold>{status.branch ?? '(detached)'}</Text>
+          <Text dimColor>· {describe(status)}</Text>
+        </Box>
+        <Box columnGap="sm" alignItems="center">
+          {isPulling ? (
+            <Text dimColor>⬇ pull 中…</Text>
+          ) : (
+            canPull(status) && (
+              <Button
+                key="pull"
+                variant="secondary"
+                label="⬇ pull"
+                onPress={() => {
+                  void pull($).catch(err => logError($, 'pull', err))
+                }}
+              />
+            )
+          )}
+          {pushedBranch !== null ? (
+            <Text color="success">✓ {pushedBranch} に push しました</Text>
+          ) : isShipping ? (
+            <Text dimColor>⬆ コミット・push を依頼中…</Text>
+          ) : (
+            canShip(status) && (
+              <Button
+                key="ship"
+                variant="primary"
+                label="⬆ コミットして push"
+                onPress={() => {
+                  void ship($).catch(err => logError($, 'ship', err))
+                }}
+              />
+            )
+          )}
+        </Box>
       </Box>
     )
-    // 帯は全 Mod で1本。下の Mod が描いた行があれば消さずに下へ積む
+    // 帯は全 Mod で1本。下の Mod が描いた行があれば消さずに、少し間を空けて下へ積む
     const below = await next(e)
     return below.type === 'engine' ? mine : (
-      <Box flexDirection="column">
+      <Box flexDirection="column" rowGap="sm">
         {mine}
         {below}
       </Box>

@@ -51,14 +51,15 @@ export function firstLine(text: string): string {
 
 /** 帯に出す状態の文言。 */
 export function describe(s: GitStatus): string {
-  const parts = [
-    `未コミット ${s.changes}`,
-    s.upstream === null ? 'upstream なし' : `未push ${s.ahead}`,
-  ]
+  // 0 の項目は出さない。何もなければ「変更なし」
+  const parts: string[] = []
+  if (s.changes > 0) parts.push(`未コミット ${s.changes}`)
+  if (s.upstream === null) parts.push('upstream なし')
+  else if (s.ahead > 0) parts.push(`未push ${s.ahead}`)
   if (s.behind > 0) parts.push(`未pull ${s.behind}`)
   // 本体を除いた追加の worktree の数だけを出す。追加がなければ出さない
   if (s.worktrees > 1) parts.push(`worktree +${s.worktrees - 1}`)
-  return parts.join(' ・ ')
+  return parts.length > 0 ? parts.join(' · ') : '変更なし'
 }
 
 /** コミットして push ボタンを出すか。 */

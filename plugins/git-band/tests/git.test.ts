@@ -35,9 +35,10 @@ test('buttons follow the status', () => {
   expect(canShip({ ...base, branch: null, changes: 3 })).toBe(false)
   expect(canPull(base)).toBe(true)
   expect(canPull({ ...base, upstream: null })).toBe(false)
-  expect(describe({ ...base, changes: 3, ahead: 1, worktrees: 2 })).toBe('未コミット 3 ・ 未push 1 ・ worktree +1')
-  expect(describe({ ...base, upstream: null, behind: 0 })).toBe('未コミット 0 ・ upstream なし')
-  expect(describe({ ...base, behind: 4 })).toBe('未コミット 0 ・ 未push 0 ・ 未pull 4')
+  expect(describe({ ...base, changes: 3, ahead: 1, worktrees: 2 })).toBe('未コミット 3 · 未push 1 · worktree +1')
+  expect(describe({ ...base, upstream: null, behind: 0 })).toBe('upstream なし')
+  expect(describe({ ...base, behind: 4 })).toBe('未pull 4')
+  expect(describe({ ...base, changes: 0, ahead: 0, behind: 0, worktrees: 1 })).toBe('変更なし')
 })
 
 test('network errors are told apart from conflicts', () => {

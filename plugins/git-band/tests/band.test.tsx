@@ -93,7 +93,7 @@ test('the band shows the status and the buttons, on terminal and desktop', async
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
     expect((await ui.find({ type: 'Text', text: /main/ }))?.text).toContain('main')
-    expect((await ui.find({ type: 'Text', text: /未コミット/ }))?.text).toBe(' ・ 未コミット 2 ・ 未push 1 ')
+    expect((await ui.find({ type: 'Text', text: /未コミット/ }))?.text).toBe('· 未コミット 2 · 未push 1')
     expect(await ui.find({ key: 'pull' })).toBeDefined()
     expect(await ui.find({ key: 'ship' })).toBeDefined()
     await ui.unmount()
@@ -249,7 +249,7 @@ test('ship turns the button into a pending line with a sound, until the ship tur
     await ui.press({ key: 'ship' })
     expect(w.sounds).toEqual(['sounds/press.wav'])
     expect(await ui.find({ key: 'ship' })).toBeUndefined()
-    expect((await ui.find({ type: 'Text', text: /依頼中/ }))?.text).toBe(' ⬆ コミット・push を依頼中…')
+    expect((await ui.find({ type: 'Text', text: /依頼中/ }))?.text).toBe('⬆ コミット・push を依頼中…')
 
     const turnId = `ship-${surface}`
     await $.turn.start({ text: w.prompts.at(-1) ?? '', turnId })
@@ -283,7 +283,7 @@ test('a git push that went through shows a done line with a sound for a few seco
   // 演出は Bash の結果を待たせずに走るので、それが終わるのを待つ
   await clock.advance(0)
   expect(w.sounds).toEqual(['sounds/press.wav', 'sounds/pushed.wav'])
-  expect((await ui.find({ type: 'Text', text: /push しました/ }))?.text).toBe(' ✓ main に push しました')
+  expect((await ui.find({ type: 'Text', text: /push しました/ }))?.text).toBe('✓ main に push しました')
   expect(await ui.find({ type: 'Text', text: /依頼中/ })).toBeUndefined()
 
   await clock.advance(4_000)
