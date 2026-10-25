@@ -3,8 +3,6 @@
 export type LearningsAppended = {
   /** 今セッションで自動追記した件数 */
   count: number
-  /** 直近の追記（帯に出す本文、取り消し用の記録ID） */
-  last?: { recordId: string; section: string; line: string }
   /** 作業ブランチで保留していた分をまとめて書いたときの件数 */
   fromPending: number
 }
@@ -14,8 +12,8 @@ export type LearningsNotice = {
   isDue: boolean
   observations: number
   daysSince?: number
-  /** 押された、または閉じられた */
-  isDismissed: boolean
+  /** 「学びを反映」を押して、そのターンが終わるのを待っている */
+  isReflecting: boolean
 }
 
 export type LearningsSession = {
@@ -25,7 +23,7 @@ export type LearningsSession = {
   repoKey: string | null
   /** LEARNINGS.md のない Git リポジトリで init を案内するときの、そのリポジトリの識別キー。案内しないなら null */
   initOfferFor: string | null
-  /** 最初のプロンプトがもう送られたか（統合と init の案内は送られる前だけ） */
+  /** 最初のプロンプトがもう送られたか（init の案内は送られる前だけ） */
   hasPrompted: boolean
 }
 

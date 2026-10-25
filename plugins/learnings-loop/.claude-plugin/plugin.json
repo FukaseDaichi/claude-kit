@@ -31,13 +31,13 @@
     "noticeCount": {
       "type": "number",
       "title": "統合の案内: 件数しきい値",
-      "description": "生の観察がこの件数以上なら、セッション開始時の帯で統合を案内する。",
+      "description": "生の観察がこの件数以上なら、帯の「学びを反映」ボタンを強調して案内する。",
       "default": 80
     },
     "noticeDays": {
       "type": "number",
       "title": "統合の案内: 日数しきい値",
-      "description": "最終統合からこの日数を超えたら案内する。",
+      "description": "最終統合からこの日数を超えたら、同じように案内する。",
       "default": 7
     },
     "injectPrinciples": {

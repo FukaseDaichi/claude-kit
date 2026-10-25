@@ -57,7 +57,7 @@ const appendedAtom = atom({ plugin: 'learnings-loop', key: 'appended' } as const
 const noticeAtom = atom({ plugin: 'learnings-loop', key: 'notice' } as const, {
   isDue: false,
   observations: 0,
-  isDismissed: false,
+  isReflecting: false,
 } as LearningsNotice)
 const extractionAtom = atom({ plugin: 'learnings-loop', key: 'extraction' } as const, {
   processedUpTo: 0,
@@ -210,11 +210,9 @@ async function bumpUsage($: EngineInterface, u: ModelUsage, runs = 0): Promise<v
 
 async function noteWritten($: EngineInterface, written: readonly AppendedRecord[], fromPending: boolean): Promise<void> {
   if (written.length === 0) return
-  const last = written[written.length - 1]
   await update($, appendedAtom, a => ({
     count: a.count + (fromPending ? 0 : written.length),
     fromPending: a.fromPending + (fromPending ? written.length : 0),
-    last: last === undefined ? a.last : { recordId: last.id, section: last.section, line: last.line },
   }))
   const s = await read($, sessionAtom)
   if (s.file !== null) {
@@ -328,18 +326,8 @@ async function undoRecord($: EngineInterface, rec: AppendedRecord): Promise<stri
   if (after === undefined || hasLine(after, rec.section, rec.line)) return '書き込み後の確認に失敗しました。'
   await markUndone($, s.repoKey, rec.id)
   await addDiscarded($, s.repoKey, [{ text: rec.text, section: rec.section, reason: 'undone' }], await $.clock.now())
-  await update($, appendedAtom, a => ({ ...a, last: a.last?.recordId === rec.id ? undefined : a.last }))
   await refreshNotice($, after)
   return `取り消しました: [${rec.section}] ${rec.text}`
-}
-
-async function undoLast($: EngineInterface): Promise<string> {
-  const s = await read($, sessionAtom)
-  if (s.repoKey === null) return 'LEARNINGS.md がありません。'
-  const list = (await getAppended($, s.repoKey)).filter(r => !r.isUndone)
-  const rec = list[list.length - 1]
-  if (rec === undefined) return '取り消せる追記がありません。'
-  return undoRecord($, rec)
 }
 
 async function adoptDiscarded($: EngineInterface, index: number): Promise<string> {
@@ -479,6 +467,35 @@ async function commitLearnings($: EngineInterface): Promise<string> {
   return `${s.file} だけを commit しました（「${COMMIT_MESSAGE}」）。他にステージしていたファイルはそのままです。`
 }
 
+// ---- 学びの反映（統合） -------------------------------------------------------
+
+async function reflect($: EngineInterface): Promise<void> {
+  if ((await read($, noticeAtom)).isReflecting) return
+  await update($, noticeAtom, n => ({ ...n, isReflecting: true }))
+  playSound($, 'sounds/press.wav')
+  try {
+    await $.prompt.submit({ text: CONSOLIDATE_PROMPT })
+  } catch (err) {
+    await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
+    throw err
+  }
+}
+
+/** 反映のターンが終わったら、件数を読み直して音と通知で知らせる。 */
+async function reflected($: EngineInterface, isAborted: boolean): Promise<void> {
+  await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
+  const s = await read($, sessionAtom)
+  const text = s.file !== null ? await readFile($, s.file) : undefined
+  if (text !== undefined) await refreshNotice($, text)
+  if (isAborted) return
+  playSound($, 'sounds/done.wav')
+  $.ui.toast('✨ 学びを反映しました')
+}
+
+function playSound($: EngineInterface, asset: string): void {
+  void $.audio.play({ asset }).catch(err => $.ui.log(`sound: ${String(err)}`, { to: 'debug' }))
+}
+
 /** 帯は全 Mod で1本。下の Mod が描いた行（below）があれば消さずに自分の行の下へ積む */
 function stack($: EngineInterface, e: RenderInput, below: RenderElement, mine: RenderElement): RenderElement {
   if (below.type === 'engine') return mine
@@ -582,6 +599,7 @@ export const register: Register = (on, rawOptions) => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined && (await read($, noticeAtom)).isReflecting) await reflected($, e.isAborted)
     // Claude が自分で LEARNINGS.md を書いたターンは、そこまでを処理済みにして抽出しない（二重の追記を防ぐ）
     if (e.agentId === undefined && !e.isAborted && turn.editedLearnings) {
       const turns = await $.session.turns()
@@ -598,13 +616,13 @@ export const register: Register = (on, rawOptions) => {
     return next(e)
   })
 
-  // 帯: 知らせるだけ。判断は /learnings。LEARNINGS.md がなければ、最初のプロンプトまで init を案内する
+  // 帯: 件数と「追記内容を見る」「学びを反映」。LEARNINGS.md がなければ、最初のプロンプトまで init を案内する
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || e.props.isWorking) return next(e)
+    if (e.props.hasSurvey) return next(e)
     const s = await read($, sessionAtom)
     if (s.file === null) {
       const repoKey = s.initOfferFor
-      if (repoKey === null || s.hasPrompted) return next(e)
+      if (repoKey === null || s.hasPrompted || e.props.isWorking) return next(e)
       const { Box, Button, Text } = $.ui.resolve(e)
       return stack(
         $,
@@ -615,7 +633,6 @@ export const register: Register = (on, rawOptions) => {
           <Button
             key="init"
             plain
-            hotkey="i"
             label="作って学びを記録する"
             onPress={() => {
               void $.session
@@ -627,75 +644,49 @@ export const register: Register = (on, rawOptions) => {
           <Button
             key="declineInit"
             plain
-            hotkey="n"
             label="このリポジトリでは聞かない"
             onPress={() => {
               void declineInit($, repoKey)
               void update($, sessionAtom, x => ({ ...x, initOfferFor: null }))
             }}
           />
-          <Text dimColor> (ctrl+x tab で帯を選択)</Text>
         </Box>,
       )
     }
     const appended = await read($, appendedAtom)
     const notice = await read($, noticeAtom)
-    const showAppended = appended.count + appended.fromPending > 0
-    const showNotice = notice.isDue && !notice.isDismissed && !s.hasPrompted
-    if (!showAppended && !showNotice) return next(e)
+    if (e.props.isWorking && !notice.isReflecting) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const parts: string[] = []
-    if (showAppended) {
-      const n = appended.count + appended.fromPending
-      parts.push(appended.fromPending > 0 && appended.count === 0 ? `保留していた ${n}件を追記` : `今セッション ${n}件追記`)
+    if (notice.isReflecting) {
+      return stack($, e, await next(e), <Text dimColor>✨ 学びを反映しています…</Text>)
     }
-    if (showNotice) {
-      const days = notice.daysSince !== undefined ? ` ・ 統合から ${notice.daysSince}日` : ''
-      parts.push(`観察 ${notice.observations}件${days}`)
-    }
+    const n = appended.count + appended.fromPending
+    const parts = [`観察 ${notice.observations}件`]
+    if (n > 0) parts.push(appended.fromPending > 0 && appended.count === 0 ? `保留していた ${n}件を追記` : `今セッション +${n}`)
+    if (notice.isDue) parts.push(`そろそろ反映どき${notice.daysSince !== undefined ? `（前回から ${notice.daysSince}日）` : ''}`)
     return stack(
       $,
       e,
       await next(e),
       <Box>
         <Text dimColor>📚 {parts.join(' ・ ')} </Text>
-        {showAppended && appended.last !== undefined && (
-          <Button
-            key="undo"
-            plain
-            hotkey="u"
-            label="取り消し"
-            onPress={() => {
-              void undoLast($).then(msg => $.ui.toast(msg))
-            }}
-          />
-        )}
-        {showAppended && <Text dimColor> /learnings 詳細 </Text>}
-        {showNotice && (
-          <Button
-            key="consolidate"
-            plain
-            hotkey="c"
-            label="統合する"
-            onPress={() => {
-              void update($, noticeAtom, n => ({ ...n, isDismissed: true }))
-              void $.prompt.submit({ text: CONSOLIDATE_PROMPT })
-            }}
-          />
-        )}
-        {showNotice && (
-          <Button
-            key="dismiss"
-            plain
-            hotkey="x"
-            label="閉じる"
-            onPress={() => {
-              void update($, noticeAtom, n => ({ ...n, isDismissed: true }))
-            }}
-          />
-        )}
-        <Text dimColor> (ctrl+x tab で帯を選択)</Text>
+        <Button
+          key="view"
+          variant="secondary"
+          label="📖 追記内容を見る"
+          onPress={() => {
+            void runCommand($, '').then(text => $.ui.log(text))
+          }}
+        />
+        <Button
+          key="reflect"
+          variant={notice.isDue ? 'primary' : 'secondary'}
+          label="✨ 学びを反映"
+          onPress={() => {
+            void reflect($).catch(err => $.ui.log(`reflect: ${String(err)}`, { to: 'debug' }))
+          }}
+        />
       </Box>,
     )
   })

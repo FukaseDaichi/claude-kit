@@ -58,6 +58,9 @@ type World = {
   completes: { model: string; prompt: string }[]
   git: Record<string, string>
   runs: string[]
+  /** 会話に出した行（$.ui.log） */
+  logs: string[]
+  toasts: string[]
 }
 
 /** エンジンの代わり: ファイル・git・モデルを答える。 */
@@ -68,6 +71,8 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     completes: [],
     git: init.git ?? {},
     runs: [],
+    logs: [],
+    toasts: [],
   }
   on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
   on('session.cwd', () => ({ value: ROOT }))
@@ -116,8 +121,14 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'base', scope: 'shared' as const }] }))
-  on('ui.log', () => ({ value: undefined }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', (_, e) => {
+    if (e.to !== 'debug') w.logs.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.toast', (_, e) => {
+    w.toasts.push(e.text)
+    return { value: undefined }
+  })
   return w
 }
 
@@ -181,10 +192,10 @@ test('an edit turn triggers a fork, a judge and one appended line', async ($, on
   expect(w.forks.length).toBe(1)
 })
 
-test("after an append the band row shows, and another mod's band row stays under it", async ($, on) => {
+test("after an append the band row shows a view button, and another mod's band row stays under it", async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on)
-  world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' } })
+  const w = world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' } })
   let turns = 0
   on('session.turns', () => ({ value: turns }))
   on('ui.render', ($, e) => {
@@ -206,10 +217,24 @@ test("after an append the band row shows, and another mod's band row stays under
       surface,
       props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
     })
-    expect(await ui.find({ key: 'undo' })).toBeDefined()
+    expect(await ui.find({ key: 'view' })).toBeDefined()
+    expect(await ui.find({ key: 'undo' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /ctrl\+x/ })).toBeUndefined()
     expect((await ui.find({ type: 'Text', text: /other mod/ }))?.text).toBe('other mod')
     await ui.unmount()
   }
+
+  // 「追記内容を見る」は /learnings と同じ内容を会話に出す
+  const ui = await $.ui.mount({
+    plugin: 'learnings-loop',
+    component: 'AbovePrompt',
+    surface: 'desktop',
+    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+  })
+  await ui.press({ key: 'view' })
+  const shown = w.logs.find(l => l.includes('/repo/LEARNINGS.md'))
+  expect(shown).toContain('zsh では PIPESTATUS')
+  await ui.unmount()
 })
 
 test('a read-only turn does not trigger extraction', async ($, on) => {
@@ -455,4 +480,62 @@ test('the init offer can be switched off in /config', { options: { offerInit: fa
   const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
   expect(await ui.find({ key: 'init' })).toBeUndefined()
   await ui.unmount()
+})
+
+test('with LEARNINGS.md the band always shows the count and the view and reflect buttons, and hides while working', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on)
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+
+  await $.session.start(ON_MAIN)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface, props: BAND })
+    expect((await ui.find({ type: 'Text', text: /観察/ }))?.text).toContain('観察 1件')
+    expect(await ui.find({ key: 'view' })).toBeDefined()
+    expect(await ui.find({ key: 'reflect' })).toBeDefined()
+    await ui.unmount()
+  }
+  const working = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: { ...BAND, isWorking: true } })
+  expect(await working.find({ key: 'reflect' })).toBeUndefined()
+  await working.unmount()
+})
+
+test('reflect asks Claude to consolidate, shows a pending line while it works, then a sound and a toast', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const w = world(on)
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  const prompts: string[] = []
+  on('prompt.submit', (_, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+  const sounds: string[] = []
+  on('audio.play', (_, e) => {
+    if (e.clip.asset !== undefined) sounds.push(e.clip.asset)
+    return { value: undefined }
+  })
+
+  await $.session.start(ON_MAIN)
+  const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  await ui.press({ key: 'reflect' })
+  expect(prompts.length).toBe(1)
+  expect(prompts[0]).toContain('consolidate-learnings')
+  expect(sounds.some(s => s.endsWith('sounds/press.wav'))).toBe(true)
+  await ui.unmount()
+
+  const pending = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: { ...BAND, isWorking: true } })
+  expect((await pending.find({ type: 'Text', text: /反映しています/ }))?.text).toContain('学びを反映しています')
+  expect(await pending.find({ key: 'reflect' })).toBeUndefined()
+  await pending.unmount()
+
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(w.toasts).toContain('✨ 学びを反映しました')
+  expect(sounds.some(s => s.endsWith('sounds/done.wav'))).toBe(true)
+  const after = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect(await after.find({ key: 'reflect' })).toBeDefined()
+  await after.unmount()
 })

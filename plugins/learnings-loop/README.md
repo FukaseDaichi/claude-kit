@@ -3,7 +3,7 @@
 Claude Code の Mod（function hooks）。リポジトリの `LEARNINGS.md` に、作業中の学びを**裏で自動追記**します。
 あなたは何もしなくてよく、気になったときに `/learnings` で見て、要らなければ取り消すだけです。
 
-> 5見出しの `LEARNINGS.md` があるリポジトリでは、確認なしで自動追記します（自分で作ったものでなくても）。追記は未 commit のまま残り、帯の `u` や `/learnings undo` で取り消せます。書かせたくないときは下の「止め方」を見てください。
+> 5見出しの `LEARNINGS.md` があるリポジトリでは、確認なしで自動追記します（自分で作ったものでなくても）。追記は未 commit のまま残り、`/learnings undo` で取り消せます。書かせたくないときは下の「止め方」を見てください。
 
 ## インストール
 
@@ -21,7 +21,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 ```
 
 その後、`LEARNINGS.md` のない Git リポジトリでセッションを始めると、帯に `📚 このリポジトリに LEARNINGS.md がありません` と出ます。
-`[i 作って学びを記録する]` で作られ、そのセッションから記録が始まります。`[n このリポジトリでは聞かない]` を押したリポジトリでは、次から出ません。
+**作って学びを記録する** を押すと作られ、そのセッションから記録が始まります。**このリポジトリでは聞かない** を押したリポジトリでは、次から出ません。
 帯は最初のプロンプトを送ると消えます。あとから作るときは `/learnings init` を打ちます。
 
 **条件**: Claude Code 2.1.287 以上。リポジトリに5見出し（`## Patterns That Work` / `## Mistakes to Avoid` /
@@ -36,7 +36,9 @@ claude plugin install learnings-loop@claude-kit --scope user
    - コードで検証: セクション名・1行・200字以内・根拠あり・機密情報なし。根拠が「推測」「直したが未確認」の候補は捨てる
    - 2段目: 小さいモデル（既定 `haiku`）が、既存の `LEARNINGS.md` と「捨てた候補」に照らして **auto / drop** に振り分ける
 3. `auto` の候補は、**今いるブランチ（worktree ならその worktree）の** `LEARNINGS.md` の該当セクションの末尾に `- YYYY-MM-DD: 本文` を1行足す。件数の上限はない
-4. 帯（入力欄の上）に `📚 今セッション 2件追記（u 取り消し）` と出る。セッション中ずっと出る
+4. 帯（入力欄の上）に `📚 観察 12件 ・ 今セッション +2  [📖 追記内容を見る] [✨ 学びを反映]` と出る（Claude が作業中は隠れる）
+   - **📖 追記内容を見る**: `/learnings` と同じ内容（追記した行と根拠など）が会話に出る（Claude には送られない）
+   - **✨ 学びを反映**: Claude に `learnings-loop:consolidate-learnings` を頼み、生の観察を原則にまとめ、恒常的なルールは指示ファイルやスキルへ移す。押すと音が鳴り、終わるまで帯が「✨ 学びを反映しています…」になり、終わるとチャイムと通知で知らせる（音は macOS だけ）
 5. 追記は未 commit のまま作業ツリーに残る。commit したいときに `/learnings commit` を打つと、`LEARNINGS.md` だけを別の commit にする
 
 ## 何が起きないか
@@ -58,7 +60,6 @@ claude plugin install learnings-loop@claude-kit --scope user
 
 ## 取り消し方
 
-- 帯の `u`（直近1件）。帯は `ctrl+x tab` で選択してからキーを押す
 - `/learnings undo [番号]`（番号は `/learnings` の一覧）
 - 取り消しは「同じ行がそのセクションに残っているときだけ」その1行を消す。手で直した後なら触らない
 
@@ -74,7 +75,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 | `/learnings init` | 5見出しの `LEARNINGS.md` をテンプレートから作る。見出しが足りないときは `--fix` で末尾に足す |
 
 同梱スキル: `learnings-loop:update-learnings`（手動追記）・`learnings-loop:consolidate-learnings`（統合）。
-生の観察が80件以上、または最終統合から7日超のとき、セッション開始直後の帯に `[c 統合する]` が出ます。
+生の観察が80件以上、または最終統合から7日超のときは、帯に「そろそろ反映どき」と出て **✨ 学びを反映** が強調されます。
 
 ## 止め方
 
@@ -102,7 +103,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 | 抽出 | auto（manual = `/learnings now` のときだけ） |
 | 1回の抽出の候補上限 | 3 |
 | 抽出の最低間隔（ターン） | 0 |
-| 統合の案内: 件数 / 日数 | 80 / 7 |
+| 統合の案内: 件数 / 日数（「学びを反映」を強調するしきい値） | 80 / 7 |
 | 原則の注入 | on |
 | init の案内 | on（off = `LEARNINGS.md` のないリポジトリでも帯に出さない） |
 | 本文の文字数上限 | 200 |
