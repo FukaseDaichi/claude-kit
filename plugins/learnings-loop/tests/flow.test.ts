@@ -179,6 +179,37 @@ test('an edit turn triggers a fork, a judge and one appended line', async ($, on
   expect(w.forks.length).toBe(1)
 })
 
+test("after an append the band row shows, and another mod's band row stays under it", async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' } })
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return Text({ children: 'other mod' })
+  })
+
+  await $.session.start(ON_MAIN)
+  turns = 1
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(2000)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({
+      plugin: 'learnings-loop',
+      component: 'AbovePrompt',
+      surface,
+      props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+    })
+    expect(await ui.find({ key: 'undo' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /other mod/ }))?.text).toBe('other mod')
+    await ui.unmount()
+  }
+})
+
 test('a read-only turn does not trigger extraction', async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on)

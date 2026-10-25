@@ -4,7 +4,7 @@
 // 注: `$` を受け取る関数はすべてこのファイルの最上位の関数宣言にする（エンジンの検証の規則）。
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelUsage, PluginOptions, Register } from 'claude-code'
+import type { EngineInterface, ModelUsage, PluginOptions, Register, RenderElement, RenderInput } from 'claude-code'
 
 import type { Candidate, DropReason } from './candidates'
 import { makeJudge, runExtraction, type ExtractOptions } from './extract'
@@ -463,6 +463,18 @@ async function commitLearnings($: EngineInterface): Promise<string> {
   return `${s.file} だけを commit しました（「${COMMIT_MESSAGE}」）。他にステージしていたファイルはそのままです。`
 }
 
+/** 帯は全 Mod で1本。下の Mod が描いた行（below）があれば消さずに自分の行の下へ積む */
+function stack($: EngineInterface, e: RenderInput, below: RenderElement, mine: RenderElement): RenderElement {
+  if (below.type === 'engine') return mine
+  const { Box } = $.ui.resolve(e)
+  return (
+    <Box flexDirection="column">
+      {mine}
+      {below}
+    </Box>
+  )
+}
+
 // ---- 配線 ---------------------------------------------------------------------
 
 export const register: Register = (on, rawOptions) => {
@@ -591,7 +603,10 @@ export const register: Register = (on, rawOptions) => {
       const days = notice.daysSince !== undefined ? ` ・ 統合から ${notice.daysSince}日` : ''
       parts.push(`観察 ${notice.observations}件${days}`)
     }
-    return (
+    return stack(
+      $,
+      e,
+      await next(e),
       <Box>
         <Text dimColor>📚 {parts.join(' ・ ')} </Text>
         {showAppended && appended.last !== undefined && (
@@ -630,7 +645,7 @@ export const register: Register = (on, rawOptions) => {
           />
         )}
         <Text dimColor> (ctrl+x tab で帯を選択)</Text>
-      </Box>
+      </Box>,
     )
   })
 

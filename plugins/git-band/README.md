@@ -15,7 +15,7 @@
 ## 注意
 
 - Mod から実行する git はリポジトリのフック（pre-commit / pre-push など）が無効になる（Mods の仕様）。Claude に依頼した操作は通常どおりフックが動く
-- 帯は Mod 全体で1本しかない。ほかに帯を描く Mod を入れると、先に動く方だけが表示される
+- 帯は Mod 全体で1本。ほかに帯を描く Mod（同じ claude-kit の learnings-loop など）と一緒に入れると、行が縦に並ぶ。相手の Mod が下の行を消す作りだと、git-band の行が出ないことがある
 - 音は macOS だけで鳴る（`afplay` を使う）。Linux・Windows では鳴らず、表示だけ変わる
 - 帯が出るのはターミナルと Desktop アプリの Code タブ。`claude -p`・Agent SDK（Obsidian の Claudian など）では描画されない
 

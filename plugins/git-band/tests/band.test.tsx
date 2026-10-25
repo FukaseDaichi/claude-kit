@@ -31,7 +31,8 @@ const DIRTY = `# branch.oid 1
 `
 const WORKTREES = 'worktree /repo\nHEAD 1\nbranch refs/heads/main\n'
 
-function world(on: On, git: World['git']): World {
+/** `below` を渡すと、帯の下にほかの Mod がその文字を描いている状態にする */
+function world(on: On, git: World['git'], below?: string): World {
   const w: World = { git, calls: [], prompts: [], toasts: [], sounds: [] }
   on('process.run', (_, e) => {
     const key = e.argv.slice(1).join(' ')
@@ -58,6 +59,11 @@ function world(on: On, git: World['git']): World {
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.render', ($, e) => {
+    if (below === undefined) return { type: 'engine', ref: 0 } // エンジン自身の帯（アンケートがなければ何も描かない）
+    const { Text } = $.ui.resolve(e)
+    return <Text>{below}</Text>
+  })
   return w
 }
 
@@ -96,16 +102,28 @@ test('the band shows the status and the buttons, on terminal and desktop', async
 
 test('outside a git repository the band is left to the engine', async ($, on) => {
   mock.clock(on)
-  world(on, { 'status --porcelain=v2 --branch': { exitCode: 128, stderr: 'fatal: not a git repository' } })
-  on('ui.render', ($, e) => {
-    const { Text } = $.ui.resolve(e)
-    return <Text>engine</Text>
-  })
+  world(on, { 'status --porcelain=v2 --branch': { exitCode: 128, stderr: 'fatal: not a git repository' } }, 'engine')
   await $.session.start(START)
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
   expect(await ui.find({ key: 'pull' })).toBeUndefined()
   await ui.unmount()
+})
+
+test("another mod's band row stays, under git-band's row", async ($, on) => {
+  mock.clock(on)
+  world(on, {
+    'status --porcelain=v2 --branch': { exitCode: 0, stdout: DIRTY },
+    'worktree list --porcelain': { exitCode: 0, stdout: WORKTREES },
+  }, 'other mod')
+  await $.session.start(START)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    expect(await ui.find({ key: 'pull' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /other mod/ }))?.text).toBe('other mod')
+    await ui.unmount()
+  }
 })
 
 test('a clean tree hides the ship button', async ($, on) => {

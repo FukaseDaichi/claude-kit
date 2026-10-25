@@ -17,6 +17,7 @@
 
 ## 守ること
 
+- 帯（`AbovePrompt`）を描く Mod は `await next(e)` で下の Mod の行を受け取り、自分の行の下に積む（帯は全 Mod で1本なので、返すだけだとほかの Mod の帯を消す）。git-band の `ui.render` が見本
 - プラグインの外のファイルを参照しない（`../../shared` など）。プラグインは別々にキャッシュへコピーされるので、入れた先で動かなくなる
 - commit 前に `scripts/check.sh` を通す。手元の版で試すときは `claude --plugin-dir plugins/<name>`
 - 公開リポジトリなので、秘密情報・会社の情報・個人のパスを入れない。仕事用のスキルは別の private マーケットプレイスに置く

@@ -176,7 +176,7 @@ export const register: Register = on => {
     const pushedBranch = await read($, pushedAtom)
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    return (
+    const mine = (
       <Box>
         <Text bold>⎇ {status.branch ?? '(detached)'}</Text>
         <Text dimColor> ・ {describe(status)} </Text>
@@ -211,6 +211,14 @@ export const register: Register = on => {
             />
           )
         )}
+      </Box>
+    )
+    // 帯は全 Mod で1本。下の Mod が描いた行があれば消さずに下へ積む
+    const below = await next(e)
+    return below.type === 'engine' ? mine : (
+      <Box flexDirection="column">
+        {mine}
+        {below}
       </Box>
     )
   })
