@@ -186,7 +186,6 @@ export const register: Register = on => {
           canPull(status) && (
             <Button
               key="pull"
-              hotkey="p"
               label="⬇ pull"
               onPress={() => {
                 void pull($).catch(err => logError($, 'pull', err))
@@ -202,7 +201,6 @@ export const register: Register = on => {
           canShip(status) && (
             <Button
               key="ship"
-              hotkey="s"
               variant="primary"
               label="⬆ コミットして push"
               onPress={() => {
