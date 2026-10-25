@@ -46,11 +46,37 @@ Claude Code の中なら `/plugin marketplace add FukaseDaichi/claude-kit` の�
 
 入れたあと、開いているセッションでは `/reload-plugins` で反映されます（新しいセッションでは自動）。
 
-## 更新
+## 自動更新をオンにする
 
-自動更新をオンにしておくと、新しい版が自動で入ります。`/plugin` → **Marketplaces** → **claude-kit** → **Enable auto-update** を選びます。
+claude-kit の自動更新は、入れただけでは**オフ**です（Anthropic 公式以外のマーケットプレイスは初期設定でオフ）。オンにしておくと、新しい版がセッションの開始時に自動で入ります。上の「Claude に頼む」で入れた人はオンになっています。
 
-すぐに最新にしたいときは、同じ画面の **Update marketplace** を選びます。
+### Claude に頼む
+
+```text
+claude-kit マーケットプレイスの自動更新をオンにして。
+```
+
+### 画面から
+
+Claude Code で `/plugin` → **Marketplaces** → **claude-kit** → **Enable auto-update** を選びます。
+
+### 設定ファイルに書く
+
+`~/.claude/settings.json` の `extraKnownMarketplaces` に次を足します（すでに `claude-kit` があれば `"autoUpdate": true` の1行だけ足す）。
+
+```json
+"extraKnownMarketplaces": {
+  "claude-kit": {
+    "source": { "source": "github", "repo": "FukaseDaichi/claude-kit" },
+    "autoUpdate": true
+  }
+}
+```
+
+### 反映とすぐに更新したいとき
+
+- 新しい版は、次に始めたセッションから使われます。開いているセッションでは `/reload-plugins` を打ちます
+- 今すぐ最新にしたいときは、`/plugin` → **Marketplaces** → **claude-kit** → **Update marketplace** を選びます。ターミナルなら `claude plugin marketplace update claude-kit` のあと `claude plugin update <プラグイン名>@claude-kit`
 
 ## アンインストール
 
