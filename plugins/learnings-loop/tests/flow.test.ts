@@ -582,3 +582,79 @@ test('reflect asks Claude to consolidate, shows a pending line while it works, t
   expect(await after.find({ key: 'reflect' })).toBeDefined()
   await after.unmount()
 })
+
+const SUBMIT = { wait: false, origin: { kind: 'composer' as const } }
+
+test('when prompt.compose never reaches the mod, the principles ride on the first prompt as context, and again after a compaction', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on)
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+  const contexts: (readonly string[] | undefined)[] = []
+  on('prompt.submit', (_, e) => {
+    contexts.push(e.context)
+    return { text: e.text, context: e.context }
+  })
+  await $.session.start(ON_MAIN)
+
+  // 最初の発言: 添付される（表示には出ない context として）
+  await $.prompt.submit({ text: 'fix it', ...SUBMIT })
+  expect(contexts.length).toBe(1)
+  expect(contexts[0]?.length).toBe(1)
+  expect(contexts[0]?.[0]).toContain('原則1')
+  expect(contexts[0]?.[0]).toContain('自分で LEARNINGS.md に追記しない')
+  turns = 1
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+
+  // 2回目以降は添付しない
+  await $.prompt.submit({ text: 'more', ...SUBMIT })
+  expect(contexts[1]).toBeUndefined()
+  turns = 2
+  await $.turn.start({ text: 'more', turnId: 't2' })
+
+  // 会話圧縮（turns が前回より減る）のあとの最初の発言: もう一度添付する
+  turns = 1
+  await $.prompt.submit({ text: 'after compact', ...SUBMIT })
+  expect(contexts[2]?.[0]).toContain('原則1')
+
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('原則: 発言に添付')
+})
+
+test('once prompt.compose has reached the mod, nothing is attached to the prompt', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on)
+  on('session.turns', () => ({ value: 1 }))
+  const contexts: (readonly string[] | undefined)[] = []
+  on('prompt.submit', (_, e) => {
+    contexts.push(e.context)
+    return { text: e.text, context: e.context }
+  })
+  await $.session.start(ON_MAIN)
+  await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+
+  await $.prompt.submit({ text: 'fix it', ...SUBMIT })
+  expect(contexts[0]).toBeUndefined()
+
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('原則: システムプロンプトに注入')
+})
+
+test('with the injection off, neither route carries the principles', { options: { injectPrinciples: false } }, async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on)
+  on('session.turns', () => ({ value: 1 }))
+  const contexts: (readonly string[] | undefined)[] = []
+  on('prompt.submit', (_, e) => {
+    contexts.push(e.context)
+    return { text: e.text, context: e.context }
+  })
+  await $.session.start(ON_MAIN)
+  await $.prompt.submit({ text: 'fix it', ...SUBMIT })
+  expect(contexts[0]).toBeUndefined()
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  expect(composed.sections.some(s => s.id === 'learnings-loop:principles')).toBe(false)
+})

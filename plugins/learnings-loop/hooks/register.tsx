@@ -108,6 +108,10 @@ let criteriaText = ''
 let turn = { edits: 0, errors: 0, editedLearnings: false }
 /** 前回の主会話の turn.start で見た `$.session.turns()`。会話圧縮の検知に使う */
 let lastTurns = 0
+/** prompt.compose が自分まで届いたか（組織の管理設定がある環境では cc-plugin-sec-default が飛ばす） */
+let composeSeen = false
+/** 原則を発言の添付（context）で渡したか。会話圧縮のあとは渡し直す */
+let promptInjected = false
 let poller: { cancel: () => void } | undefined
 
 const ZERO_USAGE: ModelUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
@@ -130,6 +134,26 @@ async function noteCompaction($: EngineInterface): Promise<void> {
     $.ui.log(`compaction detected (turns ${lastTurns} -> ${turns}); processedUpTo reset`, { to: 'debug' })
   }
   lastTurns = turns
+}
+
+/** システムプロンプトにも発言の添付にも同じ文で渡す原則の本文（セッション開始時点の内容で固定） */
+function principlesBlock(file: string): string {
+  return [
+    '# Project learnings (learnings-loop)',
+    principlesText !== '' ? `## Consolidated Principles\n${principlesText}` : '（まだ原則はありません）',
+    '',
+    `生の観察 ${observationsAtStart} 件が \`${file}\` にある。関係しそうな作業の前に grep して参照せよ。`,
+    '学びの記録は learnings-loop が自動で行う。明示的に頼まれない限り、自分で LEARNINGS.md に追記しない。',
+    'LEARNINGS.md の未 commit の変更は learnings-loop の追記。作業の commit に含めてよい（戻したり除いたりしない）。',
+  ].join('\n')
+}
+
+/** 原則がどの経路で Claude に届いているか（/learnings の表示用） */
+function principlesVia(): 'off' | 'system' | 'prompt' | 'none' {
+  if (!options.injectPrinciples) return 'off'
+  if (composeSeen) return 'system'
+  if (promptInjected) return 'prompt'
+  return 'none'
 }
 
 function extractOptions(): ExtractOptions {
@@ -433,6 +457,7 @@ async function statusText($: EngineInterface): Promise<string> {
     pending: s.repoKey !== null ? await getPending($, s.repoKey) : [],
     discarded: s.repoKey !== null ? await getDiscarded($, s.repoKey) : [],
     thresholds: { count: options.noticeCount, days: options.noticeDays },
+    principlesVia: principlesVia(),
   })
 }
 
@@ -578,6 +603,8 @@ export const register: Register = (on, rawOptions) => {
       await update($, sessionAtom, s => ({ ...s, hasPrompted: false }))
       turn = { edits: 0, errors: 0, editedLearnings: false }
       lastTurns = 0
+      composeSeen = false
+      promptInjected = false
     }
     return next(e)
   })
@@ -593,20 +620,13 @@ export const register: Register = (on, rawOptions) => {
     return r
   })
 
-  // 原則の注入（セッション開始時点の内容で固定）
+  // 原則の注入（本線）: システムプロンプトに足す
   on('prompt.compose', async ($, e, next) => {
+    composeSeen = true
     const r = await next(e)
     const s = await read($, sessionAtom)
     if (s.file === null || !options.injectPrinciples) return r
-    const text = [
-      '# Project learnings (learnings-loop)',
-      principlesText !== '' ? `## Consolidated Principles\n${principlesText}` : '（まだ原則はありません）',
-      '',
-      `生の観察 ${observationsAtStart} 件が \`${s.file}\` にある。関係しそうな作業の前に grep して参照せよ。`,
-      '学びの記録は learnings-loop が自動で行う。明示的に頼まれない限り、自分で LEARNINGS.md に追記しない。',
-      'LEARNINGS.md の未 commit の変更は learnings-loop の追記。作業の commit に含めてよい（戻したり除いたりしない）。',
-    ].join('\n')
-    return { sections: [...r.sections, { id: SECTION_ID, text, scope: 'session' as const }] }
+    return { sections: [...r.sections, { id: SECTION_ID, text: principlesBlock(s.file), scope: 'session' as const }] }
   })
 
   // 観察
@@ -618,9 +638,22 @@ export const register: Register = (on, rawOptions) => {
     return next(e)
   })
 
+  // 原則の注入（代替）: prompt.compose が届かない環境のために、人の発言に context（モデルだけが読む添付。表示には出ない）で渡す。
+  // 最初の発言と、会話圧縮のあとの最初の発言に1回ずつ。prompt.compose が一度でも届いていれば（システムプロンプトにある）渡さない。
+  // 最初の発言の時点では compose が届くか分からないので、どちらの環境でも最初の1回は添付する（届く環境では1回だけ重なる）
   on('prompt.submit', async ($, e, next) => {
     if (!e.isMeta) await update($, sessionAtom, s => (s.hasPrompted ? s : { ...s, hasPrompted: true }))
-    return next(e)
+    if (e.isMeta || e.command !== undefined || !options.injectPrinciples || composeSeen) return next(e)
+    const s = await read($, sessionAtom)
+    if (s.file === null) return next(e)
+    if (promptInjected) {
+      // turn.start より先に来るので、圧縮の検知（turns が前回より減った）をここでも見る
+      const turns = await $.session.turns().catch(() => undefined)
+      if (turns === undefined || turns >= lastTurns) return next(e)
+    }
+    promptInjected = true
+    $.ui.log('principles attached to the prompt (prompt.compose has not reached this mod)', { to: 'debug' })
+    return next({ ...e, context: [...(e.context ?? []), principlesBlock(s.file)] })
   })
 
   on('tool.call', async ($, e, next) => {
