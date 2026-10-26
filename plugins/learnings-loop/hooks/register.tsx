@@ -13,6 +13,7 @@ import {
   countObservations,
   daysBetween,
   hasLine,
+  isLearningsPath,
   isSection,
   lastConsolidated,
   localDate,
@@ -105,12 +106,30 @@ let observationsAtStart = 0
 let criteriaText = ''
 /** ターンごとの観察 */
 let turn = { edits: 0, errors: 0, editedLearnings: false }
+/** 前回の主会話の turn.start で見た `$.session.turns()`。会話圧縮の検知に使う */
+let lastTurns = 0
 let poller: { cancel: () => void } | undefined
 
 const ZERO_USAGE: ModelUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
+/** 親ディレクトリ。区切りは `/` と `\` の両方を受ける（Windows の cwd でも壊れないように）。 */
 function dirOf(path: string): string {
-  return path.replace(/\/[^/]*$/, '') || '/'
+  return path.replace(/[\\/][^\\/]*$/, '') || '/'
+}
+
+/**
+ * 会話圧縮を turn.start で検知し、処理済み位置を今のターンの手前にそろえる（session.compact が飛ばされる環境のため）。
+ * 根拠: 2.1.309 で /compact の次の turn.start では $.session.turns() が前回より小さくなる（実測 5 → 4、messages は 12 → 5）。
+ */
+async function noteCompaction($: EngineInterface): Promise<void> {
+  const turns = await $.session.turns().catch(() => undefined)
+  if (turns === undefined) return
+  if (turns < lastTurns) {
+    // turns には今のターンのプロンプトも入っているので、処理済みはその手前まで
+    await update($, extractionAtom, x => ({ ...x, processedUpTo: Math.max(0, turns - 1) }))
+    $.ui.log(`compaction detected (turns ${lastTurns} -> ${turns}); processedUpTo reset`, { to: 'debug' })
+  }
+  lastTurns = turns
 }
 
 function extractOptions(): ExtractOptions {
@@ -558,11 +577,13 @@ export const register: Register = (on, rawOptions) => {
       await update($, appendedAtom, () => ({ count: 0, fromPending: 0 }))
       await update($, sessionAtom, s => ({ ...s, hasPrompted: false }))
       turn = { edits: 0, errors: 0, editedLearnings: false }
+      lastTurns = 0
     }
     return next(e)
   })
 
-  // 会話圧縮の後は、フォークから見える範囲と処理済み位置が一致しないのでリセット
+  // 会話圧縮の後は、フォークから見える範囲と処理済み位置が一致しないのでリセット。
+  // 組織の管理設定がある環境では cc-plugin-sec-default がこの hook を飛ばすので、本命は turn.start の検知（下）
   on('session.compact', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId === undefined) {
@@ -589,8 +610,11 @@ export const register: Register = (on, rawOptions) => {
   })
 
   // 観察
-  on('turn.start', ($, e, next) => {
-    if (e.agentId === undefined) turn = { edits: 0, errors: 0, editedLearnings: false }
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      turn = { edits: 0, errors: 0, editedLearnings: false }
+      await noteCompaction($)
+    }
     return next(e)
   })
 
@@ -608,7 +632,7 @@ export const register: Register = (on, rawOptions) => {
     else if (EDIT_TOOLS.has(tool) && ran.deny === undefined) {
       turn.edits++
       const path = (e as { file_path?: unknown }).file_path
-      if (typeof path === 'string' && path.endsWith(`/${FILE_NAME}`)) turn.editedLearnings = true
+      if (typeof path === 'string' && isLearningsPath(path)) turn.editedLearnings = true
     }
     return ran
   })

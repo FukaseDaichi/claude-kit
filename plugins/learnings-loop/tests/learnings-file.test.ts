@@ -6,6 +6,7 @@ import {
   daysBetween,
   hasLine,
   hash,
+  isLearningsPath,
   lastConsolidated,
   parse,
   principles,
@@ -159,5 +160,14 @@ describe('hash', () => {
   test('changes when the text changes', async () => {
     expect(hash(SAMPLE)).toBe(hash(SAMPLE))
     expect(hash(SAMPLE)).not.toBe(hash(SAMPLE + 'x'))
+  })
+})
+
+describe('isLearningsPath', () => {
+  test('sees the file name after either separator', async () => {
+    expect(isLearningsPath('C:\\x\\LEARNINGS.md')).toBe(true)
+    expect(isLearningsPath('/x/LEARNINGS.md')).toBe(true)
+    expect(isLearningsPath('LEARNINGS.md')).toBe(true)
+    expect(isLearningsPath('/x/NOT_LEARNINGS.md')).toBe(false)
   })
 })
