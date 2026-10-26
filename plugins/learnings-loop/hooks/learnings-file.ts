@@ -15,6 +15,12 @@ export const ALL_HEADINGS: readonly string[] = [...SECTIONS, CONSOLIDATED]
 
 export const FILE_NAME = 'LEARNINGS.md'
 
+/** そのパスが LEARNINGS.md か（`/` と `\` のどちらの区切りでも、末尾のファイル名で見る）。 */
+export function isLearningsPath(path: string): boolean {
+  const name = path.split(/[\\/]/).pop()
+  return name === FILE_NAME
+}
+
 const CONFLICT = /^(<{7}|={7}|>{7})( |$)/m
 
 export type Parsed =

@@ -43,7 +43,7 @@
     "injectPrinciples": {
       "type": "boolean",
       "title": "原則の注入",
-      "description": "Consolidated Principles をシステムプロンプトに足す（セッション開始時点で固定）。",
+      "description": "Consolidated Principles をシステムプロンプトに足す（セッション開始時点で固定）。届かない環境では、最初の発言と圧縮後の最初の発言に添付で渡す。",
       "default": true
     },
     "offerInit": {

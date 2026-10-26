@@ -13,6 +13,15 @@ export type StatusData = {
   pending: readonly PendingCandidate[]
   discarded: readonly DiscardedCandidate[]
   thresholds: { count: number; days: number }
+  /** 原則が Claude に届いている経路。system: システムプロンプト、prompt: 発言の添付、none: まだ、off: 設定で切っている */
+  principlesVia: 'system' | 'prompt' | 'none' | 'off'
+}
+
+const VIA_JA: Record<StatusData['principlesVia'], string> = {
+  system: '原則: システムプロンプトに注入',
+  prompt: '原則: 発言に添付（この環境ではシステムプロンプトに届かないため。最初の発言と圧縮後に1回ずつ）',
+  none: '原則: 最初の発言で添付',
+  off: '原則の注入: off',
 }
 
 const REASON_JA: Record<string, string> = {
@@ -41,6 +50,7 @@ export function formatStatus(d: StatusData): string {
 
   const u = d.extraction.usage
   const state = d.extraction.isRunning ? '抽出中' : d.extraction.isPending ? '抽出待ち' : '待機'
+  lines.push(VIA_JA[d.principlesVia])
   lines.push(`今セッションの抽出: ${d.extraction.runs} 回（${state}）・ 新規 ${u.input} / 出力 ${u.output} / キャッシュ読込 ${u.cacheRead} / 書込 ${u.cacheWrite} tok`)
   const five = d.rateLimits.find(r => r.kind === 'five_hour')
   const week = d.rateLimits.find(r => r.kind === 'seven_day')
