@@ -27,6 +27,7 @@
 - 2026-10-24: Mod の tool.call フック（tool: 'Bash'）では、next(e) の結果 r.result.gitOperation?.push?.branch で Claude の git push の成功を検知できる。commit・pr も同じ場所に入るので、stdout を解析しなくてよい
 - 2026-10-25: claude plugin test では $.plugin.root が実際のプラグインフォルダの絶対パスになるので、テストの fs.read スタブを '/plugin/templates/...' のような固定パスで引くと当たらない。末尾一致（endsWith('/templates/LEARNINGS.md')）で答えると通る
 - 2026-10-25: マーケットプレイスの autoUpdate が true でも、push 直後に入っている版は古いままのことがある。今すぐ最新にするには claude plugin marketplace update <マーケットプレイス> のあと、claude plugin update <プラグイン>@<マーケットプレイス> を実行する（反映には再起動か /reload-plugins が必要）
+- 2026-10-26: Git Bash から claude -p "/compact" を打つと MSYS のパス変換で C:/Program Files/Git/compact に化けて実行されない。MSYS_NO_PATHCONV=1 を付けると /compact として届く
 
 ## Open Questions
 （未解決の疑問）
