@@ -13,6 +13,7 @@
 （効いたやり方・型）
 
 - 2026-10-25: Mod の型チェックは、tsc がなくても scratchpad に tsconfig（include に plugin-authoring スキルの claude-code.d.ts と plugins/<name>/hooks・types・tests）を置き、npx -y -p typescript@5.6.3 tsc -p <その tsconfig> で、ロード前の Mod でもできる
+- 2026-10-26: Mod がシステムプロンプトに文を足せない環境では、prompt.submit で next({ ...e, context: [...(e.context ?? []), 本文] }) を使うと、モデルだけが読み利用者には表示されない添付として渡せる（発言 text の書き換えは不要）
 
 ## Mistakes to Avoid
 （失敗と再発防止）
