@@ -583,7 +583,7 @@ export const register: Register = (on, rawOptions) => {
       '',
       `生の観察 ${observationsAtStart} 件が \`${s.file}\` にある。関係しそうな作業の前に grep して参照せよ。`,
       '学びの記録は learnings-loop が自動で行う。明示的に頼まれない限り、自分で LEARNINGS.md に追記しない。',
-      'LEARNINGS.md の未 commit の変更は learnings-loop の追記。作業の commit には含めない（`git add -A` や `git commit -a` でも入れない）。commit はユーザーが `/learnings commit` で別に行う。',
+      'LEARNINGS.md の未 commit の変更は learnings-loop の追記。作業の commit に含めてよい（戻したり除いたりしない）。',
     ].join('\n')
     return { sections: [...r.sections, { id: SECTION_ID, text, scope: 'session' as const }] }
   })

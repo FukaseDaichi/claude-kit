@@ -39,7 +39,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 4. 帯（入力欄の上）に `📚 学び · 観察 12件 · 今セッション +2   [📖 追記内容を見る] [✨ 学びを反映]` と出る（Claude が作業中は隠れる）
    - **📖 追記内容を見る**: `/learnings` と同じ内容（追記した行と根拠など）が会話に出る（Claude には送られない）
    - **✨ 学びを反映**: Claude に `learnings-loop:consolidate-learnings` を頼み、生の観察を原則にまとめ、恒常的なルールは指示ファイルやスキルへ移す。押すと音が鳴り、終わるまで帯が「✨ 学びを反映しています…」になり、終わるとチャイムと通知で知らせる（音は macOS だけ）
-5. 追記は未 commit のまま作業ツリーに残る。commit したいときに `/learnings commit` を打つと、`LEARNINGS.md` だけを別の commit にする
+5. 追記は未 commit のまま作業ツリーに残る。作業の commit に一緒に入ってよい。分けたいときは `/learnings commit` を打つと、`LEARNINGS.md` だけを別の commit にする
 
 ## 何が起きないか
 
@@ -53,9 +53,8 @@ claude plugin install learnings-loop@claude-kit --scope user
 
 ## commit との関係
 
-- 学びは作業中のブランチの `LEARNINGS.md` に書かれ、未 commit のまま残る。Claude には「作業の commit に入れない」と伝えてある
-- `/learnings commit` で `LEARNINGS.md` だけの commit（メッセージ「LEARNINGS.md を更新（learnings-loop）」）を作る。手で直した分も含めて、そのファイルの変更すべてが入る。他にステージしていたファイルはステージしたまま残る
-- PR に入れたいときは、push の前に `/learnings commit` を打つ
+- 学びは作業中のブランチの `LEARNINGS.md` に書かれ、未 commit のまま残る。Claude には「作業の commit に含めてよい」と伝えてある（`git add -A` などで一緒に入る）
+- 学びだけを別の commit にしたいときは、`/learnings commit` で `LEARNINGS.md` だけの commit（メッセージ「LEARNINGS.md を更新（learnings-loop）」）を作る。手で直した分も含めて、そのファイルの変更すべてが入る。他にステージしていたファイルはステージしたまま残る
 - 以前は Claude の `git commit` の直前に自動で `git add` していたが、やめた。Claude が見た diff と commit の中身がずれて、Claude が「勝手に入った」と判断して commit を作り直すことがあったため
 
 ## 取り消し方

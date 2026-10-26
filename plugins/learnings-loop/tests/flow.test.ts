@@ -342,7 +342,7 @@ test('git commit by Claude never stages LEARNINGS.md', async ($, on) => {
   expect(w.runs.includes(`add -- ${FILE}`)).toBe(false)
 
   const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
-  expect(composed.sections.find(s => s.id === 'learnings-loop:principles')?.text).toContain('作業の commit には含めない')
+  expect(composed.sections.find(s => s.id === 'learnings-loop:principles')?.text).toContain('作業の commit に含めてよい')
 })
 
 test('/learnings commit commits only LEARNINGS.md, and only when it has changes', async ($, on) => {
