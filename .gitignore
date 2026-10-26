@@ -3,3 +3,5 @@
 plugins/*/.claude-plugin/types/
 node_modules/
 .DS_Store
+# API キーなどの秘密情報
+.env

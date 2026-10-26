@@ -8,6 +8,7 @@ Claude Code に足せるプラグイン集です。使いたいものだけを�
 | --- | --- | --- |
 | [git-band](plugins/git-band/) | Mod | 入力欄の上に git の状態（ブランチ／未コミット／未 push／追加の worktree）を出し、pull をボタン1つで実行、コミットと push は Claude に依頼する |
 | [learnings-loop](plugins/learnings-loop/) | Mod＋スキル | リポジトリの `LEARNINGS.md` に作業中の学びを裏で自動追記する。帯の **📖 追記内容を見る**・**✨ 学びを反映** で確認と原則へのまとめができる。スキル `learnings-loop:update-learnings` / `learnings-loop:consolidate-learnings` を同梱 |
+| [narration](plugins/narration/) | スキル | 文章からナレーション音声（WAV）を作る。Gemini TTS API で、動画のシーンごとの音声ファイルや声の聴き比べを作るスキル `narration:gemini-tts` を同梱 |
 
 各プラグインの詳しい使い方と注意点は、表のリンク先の README を見てください。
 

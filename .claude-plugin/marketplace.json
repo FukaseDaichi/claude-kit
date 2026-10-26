@@ -22,6 +22,14 @@
         "name": "FukaseDaichi"
       },
       "source": "./plugins/learnings-loop"
+    },
+    {
+      "name": "narration",
+      "description": "文章からナレーション音声（WAV）を作るスキル集。Gemini TTS API で、動画のシーンごとの音声ファイルや声の聴き比べを作る gemini-tts を同梱。",
+      "author": {
+        "name": "FukaseDaichi"
+      },
+      "source": "./plugins/narration"
     }
   ]
 }
