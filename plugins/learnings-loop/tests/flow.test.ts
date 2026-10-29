@@ -69,6 +69,8 @@ type World = {
   sizes: Map<string, number>
   /** ファイルごとの更新日時（なければ 0） */
   mtimes: Map<string, number>
+  /** $.fs.read が失敗するパス */
+  unreadable: Set<string>
 }
 
 /**
@@ -93,6 +95,7 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     listFails: false,
     sizes: init.sizes ?? new Map(),
     mtimes: init.mtimes ?? new Map(),
+    unreadable: new Set(),
   }
   on('fs.list', (_, e) => {
     if (w.listFails) throw new Error('EACCES')
@@ -126,6 +129,7 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     if (path.endsWith('/criteria/CRITERIA.md')) return { value: '' }
     const text = w.files.get(path.endsWith('/templates/LEARNINGS.md') ? TEMPLATE : path)
     w.reads.push(path)
+    if (w.unreadable.has(path)) throw new Error(`EACCES ${e.path}`)
     if (text === undefined) throw new Error(`ENOENT ${e.path}`)
     return { value: text }
   })
@@ -609,6 +613,7 @@ test('reflect asks Claude to consolidate, shows a pending line while it works, t
   expect(await pending.find({ key: 'reflect' })).toBeUndefined()
   await pending.unmount()
 
+  await $.turn.start({ text: prompts[0] ?? '', turnId: 't1' })
   await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
   expect(w.toasts).toContain('✨ 学びを反映しました')
   expect(sounds.some(s => s.endsWith('sounds/done.wav'))).toBe(true)
@@ -742,9 +747,14 @@ async function startReflecting($: Parameters<Parameters<typeof test>[1]>[0], on:
     await ui.press({ key: 'reflect' })
     await ui.unmount()
   }
-  const complete = (isAborted: boolean) =>
-    $.turn.complete({ answer: 'done', durationMs: 1, isAborted, turnId: 't', reason: isAborted ? 'aborted' : 'answer' })
-  return { prompts, press, complete }
+  let n = 0
+  /** 反映のプロンプトで始まるターンを、reason で終える */
+  const finish = async (reason: 'answer' | 'aborted' | 'error') => {
+    const turnId = `r${++n}`
+    await $.turn.start({ text: prompts.at(-1) ?? '', turnId })
+    await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: reason === 'aborted', turnId, reason })
+  }
+  return { prompts, press, finish }
 }
 
 test("reflect writes a digest of this repository's sessions and passes its path", async ($, on) => {
@@ -768,12 +778,12 @@ test('the history cursor advances only after an unaborted reflect turn', async (
   const r = await startReflecting($, on)
 
   await r.press()
-  await r.complete(true)
+  await r.finish('aborted')
   w.files.delete(DIGEST)
   await r.press()
   expect(w.files.get(DIGEST) ?? '').toContain('ルートでの発言')
 
-  await r.complete(false)
+  await r.finish('answer')
   await r.press()
   expect(r.prompts[2]).toContain('会話履歴は使わない')
 })
@@ -799,11 +809,75 @@ test('when the history folder cannot be listed, the prompt names the folder and 
 
   w.listFails = true
   await r.press()
-  expect(r.prompts[0]).toContain(`${PROJECTS}/-repo`)
+  expect(r.prompts[0]).toContain(PROJECTS)
+  expect(r.prompts[0]).toContain('-repo*')
   expect(r.prompts[0]).toContain('Grep')
-  await r.complete(false)
+  await r.finish('answer')
 
   w.listFails = false
   await r.press()
   expect(w.files.get(DIGEST) ?? '').toContain('ルートでの発言')
+})
+
+test('a user turn that finishes before the queued reflect turn does not advance the cursor or chime', async ($, on) => {
+  const w = historyWorld(on)
+  const r = await startReflecting($, on)
+
+  await r.press()
+  await $.turn.start({ text: '別の依頼', turnId: 'u1' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 'u1', reason: 'answer' })
+  expect(w.toasts).not.toContain('✨ 学びを反映しました')
+
+  await r.finish('aborted')
+  w.files.delete(DIGEST)
+  await r.press()
+  expect(w.files.get(DIGEST) ?? '').toContain('ルートでの発言')
+})
+
+test('a reflect turn that ends in an error does not advance the cursor or chime', async ($, on) => {
+  const w = historyWorld(on)
+  const r = await startReflecting($, on)
+
+  await r.press()
+  await r.finish('error')
+  expect(w.toasts).not.toContain('✨ 学びを反映しました')
+
+  w.files.delete(DIGEST)
+  await r.press()
+  expect(w.files.get(DIGEST) ?? '').toContain('ルートでの発言')
+})
+
+test('when no jsonl can be read, the prompt falls back to the folder instead of saying there was nothing', async ($, on) => {
+  const w = historyWorld(on)
+  const r = await startReflecting($, on)
+
+  for (const path of w.files.keys()) if (path.endsWith('.jsonl')) w.unreadable.add(path)
+  await r.press()
+
+  expect(r.prompts[0]).toContain('Grep')
+  expect(r.prompts[0]).not.toContain('前回以降の発言なし')
+})
+
+test('a jsonl that cannot be read is listed as unread when others were read', async ($, on) => {
+  const w = historyWorld(on)
+  const r = await startReflecting($, on)
+
+  w.unreadable.add(`${PROJECTS}/-repo-sub/s2.jsonl`)
+  await r.press()
+
+  const digest = w.files.get(DIGEST) ?? ''
+  expect(digest).toContain('ルートでの発言')
+  expect(digest).toContain('s2.jsonl')
+  expect(r.prompts[0]).toContain('未読')
+})
+
+test('when no history folder matches this repository, the prompt falls back to the folder', async ($, on) => {
+  const w = historyWorld(on)
+  const r = await startReflecting($, on)
+
+  for (const path of [...w.files.keys()]) if (path.startsWith(`${PROJECTS}/-repo`) && !path.startsWith(`${PROJECTS}/-repository`)) w.files.delete(path)
+  await r.press()
+
+  expect(r.prompts[0]).toContain('Grep')
+  expect(r.prompts[0]).not.toContain('前回以降の発言なし')
 })

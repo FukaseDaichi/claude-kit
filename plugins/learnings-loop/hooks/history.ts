@@ -2,6 +2,7 @@
 // その直前の Claude の返答だけを拾う。ここは純粋関数だけ（ファイルの読み書きは register.tsx）。
 
 import { localDate } from './learnings-file'
+import { REFLECT_PREFIX } from './prompts'
 
 /** 発言は先頭から、直前の返答は末尾から、この字数で切る */
 export const USER_CHARS = 600
@@ -15,7 +16,8 @@ export const MAX_READ_BYTES = 4 * 1024 * 1024
 
 export type Exchange = { at: number; assistant: string; user: string }
 export type TranscriptExcerpt = { sessionId: string; cwd?: string; branch?: string; exchanges: Exchange[] }
-export type Unread = { path: string; size: number }
+/** 抜粋に入れられなかったログ。reason がなければ 4 MiB 超 */
+export type Unread = { path: string; size: number; reason?: string }
 export type Digest = { text: string; sessions: number; prompts: number; dropped: number; lastAt?: number }
 
 type Block = { type?: unknown; text?: unknown; name?: unknown }
@@ -71,7 +73,7 @@ export function parseTranscript(text: string, since: number): TranscriptExcerpt 
     const assistant = texts.length > 0 ? tail(texts.join('\n'), ASSISTANT_CHARS) : tools.length > 0 ? `[ツール: ${tools.join(', ')}]` : ''
     texts = []
     tools = []
-    if (Number.isNaN(at) || at <= since) continue
+    if (Number.isNaN(at) || at <= since || user.startsWith(REFLECT_PREFIX)) continue
     out.exchanges.push({ at, assistant, user: head(user, USER_CHARS) })
   }
   return out
@@ -115,15 +117,16 @@ function normPath(path: string): string {
   return /^[A-Za-z]:/.test(p) ? p.toLowerCase() : p
 }
 
-/** 抜粋の Markdown を作る。maxChars を超えたら古いセッションから丸ごと落とす */
-export function buildDigest(excerpts: readonly TranscriptExcerpt[], unread: readonly Unread[], maxChars: number): Digest {
+/** 抜粋の Markdown を作る。maxChars を超えたら、最後の発言が古いセッションから丸ごと落とす */
+export function buildDigest(excerpts: readonly TranscriptExcerpt[], unread: readonly Unread[], maxChars: number, since?: number): Digest {
+  // 最後の発言の順。長く続いている今のセッションが最後に来て、上限で落ちにくい
   const sessions = excerpts
     .filter(x => x.exchanges.length > 0)
     .slice()
-    .sort((a, b) => (a.exchanges[0]?.at ?? 0) - (b.exchanges[0]?.at ?? 0))
+    .sort((a, b) => lastAt(a) - lastAt(b))
   let dropped = 0
   for (;;) {
-    const text = render(sessions, unread, dropped)
+    const text = render(sessions, unread, dropped, since)
     if (text.length <= maxChars || sessions.length <= 1) {
       const prompts = sessions.reduce((n, s) => n + s.exchanges.length, 0)
       const ats = sessions.flatMap(s => s.exchanges.map(x => x.at))
@@ -134,10 +137,15 @@ export function buildDigest(excerpts: readonly TranscriptExcerpt[], unread: read
   }
 }
 
-function render(sessions: readonly TranscriptExcerpt[], unread: readonly Unread[], dropped: number): string {
+function lastAt(x: TranscriptExcerpt): number {
+  return x.exchanges[x.exchanges.length - 1]?.at ?? 0
+}
+
+function render(sessions: readonly TranscriptExcerpt[], unread: readonly Unread[], dropped: number, since?: number): string {
   const prompts = sessions.reduce((n, s) => n + s.exchanges.length, 0)
   const lines = ['# 会話履歴の抜粋（learnings-loop）', '']
-  lines.push(`${sessions.length} セッション・${prompts} 件の発言。${dropped > 0 ? `古いセッション ${dropped} 件は上限のため省略。` : ''}`)
+  const from = since !== undefined ? `${new Date(since).toISOString()} より後の ` : ''
+  lines.push(`${from}${sessions.length} セッション・${prompts} 件の発言。${dropped > 0 ? `古いセッション ${dropped} 件は上限のため省略。` : ''}`)
   for (const s of sessions) {
     const first = s.exchanges[0]?.at ?? 0
     lines.push('', `## ${[localDate(first), s.branch, s.sessionId.slice(0, 8)].filter(v => v !== undefined && v !== '').join(' · ')}`)
@@ -148,8 +156,8 @@ function render(sessions: readonly TranscriptExcerpt[], unread: readonly Unread[
     }
   }
   if (unread.length > 0) {
-    lines.push('', '## 未読（4 MiB 超）')
-    for (const u of unread) lines.push(`- ${u.path}（${(u.size / 1024 / 1024).toFixed(1)} MB）`)
+    lines.push('', '## 未読（4 MiB 超・読めなかったもの）')
+    for (const u of unread) lines.push(`- ${u.path}（${u.reason ?? `${(u.size / 1024 / 1024).toFixed(1)} MB`}）`)
   }
   return `${lines.join('\n')}\n`
 }

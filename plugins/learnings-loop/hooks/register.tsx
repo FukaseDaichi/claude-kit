@@ -4,7 +4,7 @@
 // 注: `$` を受け取る関数はすべてこのファイルの最上位の関数宣言にする（エンジンの検証の規則）。
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ModelUsage, PluginOptions, Register, RenderElement, RenderInput } from 'claude-code'
+import type { EngineInterface, FsEntry, ModelUsage, PluginOptions, Register, RenderElement, RenderInput, TurnCompleteReason } from 'claude-code'
 
 import type { Candidate, DropReason } from './candidates'
 import { makeJudge, runExtraction, type ExtractOptions } from './extract'
@@ -32,7 +32,7 @@ import {
   principles,
   removeLine,
 } from './learnings-file'
-import { buildConsolidatePrompt, type HistoryHandoff } from './prompts'
+import { buildConsolidatePrompt, REFLECT_PREFIX, type HistoryHandoff } from './prompts'
 import { formatStatus } from './status'
 import {
   addDiscarded,
@@ -129,6 +129,8 @@ let poller: { cancel: () => void } | undefined
 let transcriptPath: string | undefined
 /** 反映に渡した抜粋の最後の発言の日時。反映のターンが中断されずに終わったら「どこまで読んだか」に書く */
 let pendingCursor: number | undefined
+/** 反映のプロンプトで始まったターンの id。そのターンが終わったときだけ「反映した」とみなす */
+let reflectTurnId: string | undefined
 
 const ZERO_USAGE: ModelUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
@@ -535,6 +537,7 @@ async function reflect($: EngineInterface): Promise<void> {
   playSound($, 'sounds/press.wav')
   try {
     pendingCursor = undefined
+    reflectTurnId = undefined
     const history = await collectHistory($).catch((err): HistoryHandoff => ({ kind: 'none', reason: String(err) }))
     await $.prompt.submit({ text: buildConsolidatePrompt(history) })
   } catch (err) {
@@ -566,20 +569,35 @@ async function collectHistory($: EngineInterface): Promise<HistoryHandoff> {
   const root = await projectsRoot($)
   if (root === undefined) return { kind: 'none', reason: 'ホームフォルダが分からない' }
   const prefix = encodeProjectDir(mainRoot)
-  const folder = (reason: string): HistoryHandoff => ({ kind: 'folder', dir: `${root}/${prefix}`, since: localDate(since), reason })
+  const sinceIso = new Date(since).toISOString()
+  const folder = (reason: string): HistoryHandoff => ({ kind: 'folder', dir: root, pattern: `${prefix}*`, since: sinceIso, reason })
 
   let dirs: string[]
   try {
-    dirs = (await $.fs.list(root)).filter(e => e.kind === 'dir' && e.name.startsWith(prefix)).map(e => `${root}/${e.name}`)
+    // サブフォルダと worktree のフォルダ名は「<prefix>-…」になる（区切りが '-' に変わるので）
+    dirs = (await $.fs.list(root))
+      .filter(e => e.kind === 'dir' && (e.name === prefix || e.name.startsWith(`${prefix}-`)))
+      .map(e => `${root}/${e.name}`)
   } catch (err) {
     return folder(`履歴のフォルダを読めない: ${String(err)}`)
   }
+  // 今のセッションの履歴も入るはずなので、1つもなければ名前の変換が合っていない
+  if (dirs.length === 0) return folder('このリポジトリの履歴のフォルダが見つからない')
   const roots = [mainRoot, ...(await worktreeRoots((argv, init) => $.process.run(argv, init), mainRoot))]
 
   const excerpts: TranscriptExcerpt[] = []
   const unread: Unread[] = []
+  let readCount = 0
+  let failed = 0
   for (const dir of dirs) {
-    const entries = await $.fs.list(dir).catch(() => [])
+    let entries: FsEntry[]
+    try {
+      entries = await $.fs.list(dir)
+    } catch {
+      unread.push({ path: dir, size: 0, reason: '一覧を読めない' })
+      failed++
+      continue
+    }
     for (const f of entries) {
       if (f.kind !== 'file' || !f.name.endsWith('.jsonl') || f.mtimeMs <= since) continue
       const path = `${dir}/${f.name}`
@@ -588,13 +606,21 @@ async function collectHistory($: EngineInterface): Promise<HistoryHandoff> {
         continue
       }
       const text = await readFile($, path)
-      if (text === undefined) continue
+      if (text === undefined) {
+        unread.push({ path, size: f.size, reason: '読めない' })
+        failed++
+        continue
+      }
+      readCount++
       const x = parseTranscript(text, since)
       if (x.cwd !== undefined && isInside(x.cwd, roots)) excerpts.push(x)
     }
   }
 
-  const digest = buildDigest(excerpts, unread, DIGEST_CHARS)
+  // 読めたものが1つもなく、失敗があったなら、Claude に自分で読ませる
+  if (readCount === 0 && failed > 0) return folder('履歴のファイルを読めない')
+
+  const digest = buildDigest(excerpts, unread, DIGEST_CHARS, since)
   if (digest.prompts === 0 && unread.length === 0) return { kind: 'none', reason: '前回以降の発言なし' }
   const path = `${common}/learnings-loop/history.md`
   try {
@@ -603,19 +629,24 @@ async function collectHistory($: EngineInterface): Promise<HistoryHandoff> {
     return folder(`抜粋を書けない: ${String(err)}`)
   }
   pendingCursor = digest.lastAt
-  return { kind: 'digest', path, sessions: digest.sessions, prompts: digest.prompts, dropped: digest.dropped, unread: unread.length }
+  return { kind: 'digest', path, since: sinceIso, sessions: digest.sessions, prompts: digest.prompts, dropped: digest.dropped, unread: unread.length }
 }
 
-/** 反映のターンが終わったら、件数を読み直して音と通知で知らせる。 */
-async function reflected($: EngineInterface, isAborted: boolean): Promise<void> {
+/**
+ * 反映のターンが終わったら、件数を読み直して音と通知で知らせる。
+ * 答えて終わったときだけ「どこまで読んだか」を進める（中断・エラー・拒否なら次の反映で同じ範囲を読む）。
+ */
+async function reflected($: EngineInterface, reason: TurnCompleteReason): Promise<void> {
   await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
+  reflectTurnId = undefined
   const s = await read($, sessionAtom)
   const cursor = pendingCursor
   pendingCursor = undefined
-  if (!isAborted && cursor !== undefined && s.repoKey !== null) await setHistoryCursor($, s.repoKey.replace(/[\\/]+$/, ''), cursor)
+  const isAnswered = reason === 'answer'
+  if (isAnswered && cursor !== undefined && s.repoKey !== null) await setHistoryCursor($, s.repoKey.replace(/[\\/]+$/, ''), cursor)
   const text = s.file !== null ? await readFile($, s.file) : undefined
   if (text !== undefined) await refreshNotice($, text)
-  if (isAborted) return
+  if (!isAnswered) return
   playSound($, 'sounds/done.wav')
   $.ui.toast('✨ 学びを反映しました')
 }
@@ -718,6 +749,7 @@ export const register: Register = (on, rawOptions) => {
     if (e.agentId === undefined) {
       turn = { edits: 0, errors: 0, editedLearnings: false }
       await noteCompaction($)
+      if (e.text.startsWith(REFLECT_PREFIX) && (await read($, noticeAtom)).isReflecting) reflectTurnId = e.turnId
     }
     return next(e)
   })
@@ -761,7 +793,8 @@ export const register: Register = (on, rawOptions) => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined && (await read($, noticeAtom)).isReflecting) await reflected($, e.isAborted)
+    // 反映のプロンプトで始まったターンだけ。先に終わったほかのターン（反映が待ち行列にいる間の発言など）では数えない
+    if (e.agentId === undefined && reflectTurnId !== undefined && e.turnId === reflectTurnId) await reflected($, e.reason)
     // Claude が自分で LEARNINGS.md を書いたターンは、そこまでを処理済みにして抽出しない（二重の追記を防ぐ）
     if (e.agentId === undefined && !e.isAborted && turn.editedLearnings) {
       const turns = await $.session.turns()

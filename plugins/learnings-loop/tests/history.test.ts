@@ -92,6 +92,11 @@ describe('parseTranscript', () => {
     expect(r.sessionId).toBe('s1')
     expect(r.exchanges[0]?.at).toBe(T0 + 1)
   })
+
+  test('skips the reflect prompt that learnings-loop itself sends', async () => {
+    const text = [human('learnings-loop:consolidate-learnings スキルを実行して、…', T0 + 1), human('本物', T0 + 2)].join('\n')
+    expect(parseTranscript(text, 0).exchanges.map(x => x.user)).toEqual(['本物'])
+  })
 })
 
 describe('isInside', () => {
@@ -135,6 +140,26 @@ describe('buildDigest', () => {
     const d = buildDigest([older], [{ path: '/h/x.jsonl', size: 5 * 1024 * 1024 }], 40_000)
     expect(d.text).toContain('未読')
     expect(d.text).toContain('/h/x.jsonl')
+  })
+
+  test('sorts sessions by their last prompt, so a long-running session is dropped last', async () => {
+    const longRunning: TranscriptExcerpt = {
+      sessionId: 'cccccccc',
+      exchanges: [
+        { at: T0, assistant: '', user: '最初の発言' },
+        { at: T0 + 3 * DAY, assistant: '', user: '最近の発言' },
+      ],
+    }
+    const full = buildDigest([longRunning, newer], [], 40_000)
+    expect(full.text.indexOf('新しい発言')).toBeLessThan(full.text.indexOf('最近の発言'))
+    const d = buildDigest([longRunning, newer], [], full.text.length - 1)
+    expect(d.text).toContain('最近の発言')
+    expect(d.text).not.toContain('新しい発言')
+  })
+
+  test('the header says from when the prompts were read', async () => {
+    const d = buildDigest([older], [], 40_000, T0 - DAY)
+    expect(d.text).toContain(new Date(T0 - DAY).toISOString())
   })
 
   test('a session without prompts is not counted', async () => {
