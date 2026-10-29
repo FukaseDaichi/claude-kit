@@ -39,7 +39,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 3. `auto` の候補は、**今いるブランチ（worktree ならその worktree）の** `LEARNINGS.md` の該当セクションの末尾に `- YYYY-MM-DD: 本文` を1行足す。件数の上限はない
 4. 帯（入力欄の上）に `📚 学び · 観察 12件 · 今セッション +2   [📖 追記内容を見る] [✨ 学びを反映]` と出る（Claude が作業中は隠れる）
    - **📖 追記内容を見る**: `/learnings` と同じ内容（追記した行と根拠など）が会話に出る（Claude には送られない）
-   - **✨ 学びを反映**: Claude に `learnings-loop:consolidate-learnings` を頼み、生の観察を原則にまとめ、恒常的なルールは指示ファイルやスキルへ移す。押すと音が鳴り、終わるまで帯が「✨ 学びを反映しています…」になり、終わるとチャイムと通知で知らせる（音は macOS だけ）
+   - **✨ 学びを反映**: 前回以降の会話履歴の抜粋を作り（下の「会話履歴の扱い」）、Claude に `learnings-loop:consolidate-learnings` を頼む。Claude は生の観察を原則にまとめたうえで、`LEARNINGS.md`・会話履歴・指示ファイル・スキル・README の全体を見て、足す・削る・移す・スキル化の案を出す。案はまず概要が文章で出て、続くチェックボックスで選んだものだけが適用される。押すと音が鳴り、終わるまで帯が「✨ 学びを反映しています…」になり、終わるとチャイムと通知で知らせる（音は macOS だけ）
 5. 追記は未 commit のまま作業ツリーに残る。作業の commit に一緒に入ってよい。分けたいときは `/learnings commit` を打つと、`LEARNINGS.md` だけを別の commit にする
 
 ## 何が起きないか
@@ -47,10 +47,21 @@ claude plugin install learnings-loop@claude-kit --scope user
 - `## Consolidated Principles` と冒頭コメントには書かない
 - `LEARNINGS.md` が5見出しでなければ何もしない。競合マーカーがあれば書かずに保留し、次のセッション開始時に再判定して書く
 - Claude の `git commit` には手を出さない（`git add` も commit もしない）。commit するのは `/learnings commit` を打ったときだけ
-- `AGENTS.md` / `CLAUDE.md` / スキルは触らない
+- 自動の抽出では `AGENTS.md` / `CLAUDE.md` / スキル / README は触らない（変えるのは **✨ 学びを反映** でチェックした案だけ）
 - 人に仕分けを求めない。自動の条件を満たさない候補は捨てる（`/learnings` の一覧から採用し直せる）
 - 調査だけ・ユーザーの訂正だけで終わったターンは自動では拾わない（`/learnings now` で手動）
 - Claude が自分で `LEARNINGS.md` を編集したターン（`update-learnings` を回したときなど）は抽出しない。そのターンまでを処理済みにする
+
+## 会話履歴の扱い
+
+**✨ 学びを反映** は、利用者が苛立った場面（言い直し・訂正・同じ指示の繰り返し）や、セッションをまたいで同じことを説明し直している場面を拾うために、Claude Code の会話履歴（`~/.claude/projects/` の jsonl）を読みます。
+
+- 読むのは、前回、履歴を読んだ反映より後の、このリポジトリのセッションだけ（サブフォルダや Claude が作った worktree で始めたものを含む）。初回は直近30日
+- 抜き出すのは利用者が打った発言と、その直前の Claude の返答だけ（発言は先頭600字、返答は末尾300字、全体で4万字まで。超えたら古いセッションから省く）
+- 抜粋は `.git/learnings-loop/history.md` に書く。`.git` の中なので commit されない
+- 4 MiB を超えるログは読まず、抜粋の末尾に「未読」として挙げる
+- 履歴のフォルダを読めない環境では、フォルダの場所と期間だけを渡し、Claude が自分で Grep して読む
+- 反映を途中で止めたときは「どこまで読んだか」を進めないので、次の反映で同じ範囲をもう一度読む
 
 ## commit との関係
 
@@ -74,7 +85,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 | `/learnings commit` | `LEARNINGS.md` だけを1つの commit にする（他のステージ済みファイルは巻き込まない） |
 | `/learnings init` | 5見出しの `LEARNINGS.md` をテンプレートから作る。見出しが足りないときは `--fix` で末尾に足す |
 
-同梱スキル: `learnings-loop:update-learnings`（手動追記）・`learnings-loop:consolidate-learnings`（統合）。
+同梱スキル: `learnings-loop:update-learnings`（手動追記）・`learnings-loop:consolidate-learnings`（反映。手で呼んだときは会話履歴を使わない）。
 生の観察が80件以上、または最終統合から7日超のときは、帯に「そろそろ反映どき」と出て **✨ 学びを反映** が強調されます。
 
 ## 止め方
