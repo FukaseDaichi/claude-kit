@@ -87,6 +87,14 @@ describe('parseStage2', () => {
     expect(v.has('c2')).toBe(false)
     expect(v.has('c9')).toBe(false)
   })
+
+  test('accepts reinforce only with a known target id', async () => {
+    const raw = '[{"id":"c1","verdict":"reinforce","target":"L2","reason":"same"},{"id":"c2","verdict":"reinforce","target":"L9"},{"id":"c3","verdict":"reinforce"}]'
+    const v = parseStage2(raw, ['c1', 'c2', 'c3'], ['L1', 'L2'])
+    expect(v.get('c1')).toEqual({ verdict: 'reinforce', reason: 'same', target: 'L2' })
+    expect(v.has('c2')).toBe(false)
+    expect(v.has('c3')).toBe(false)
+  })
 })
 
 describe('normalize / findSecret', () => {

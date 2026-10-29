@@ -240,6 +240,49 @@ test('an edit turn triggers a fork, a judge and one appended line', async ($, on
   expect(w.forks.length).toBe(1)
 })
 
+test('a re-observed learning marks the existing line instead of adding one, once per session, and can be undone', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  const w = world(on, {
+    git: { 'rev-parse --abbrev-ref HEAD': 'main', 'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/main' },
+    judgeReply: '[{"id":"c1","verdict":"reinforce","target":"L1","reason":"same as A"}]',
+  })
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+  await $.session.start(ON_MAIN)
+
+  const editTurn = async (n: number) => {
+    turns = n
+    await $.turn.start({ text: 'fix it', turnId: `t${n}` })
+    await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+    await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: `t${n}`, reason: 'answer' })
+    await clock.advance(2000)
+  }
+
+  await editTurn(1)
+  expect(w.completes[0]?.prompt).toContain('L1 [Patterns That Work] 2026-10-02: 既存のA')
+  const marked = '- 2026-10-02: 既存のA（再観測 1回・最終 2026-10-22）'
+  expect(w.files.get(FILE)).toContain(marked)
+  expect(w.files.get(FILE)).not.toContain('pipestatus')
+  expect(w.toasts.some(t => t.includes('1件を再観測として数えた'))).toBe(true)
+
+  const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(status.text).toContain('生の観察 1 件')
+  expect(status.text).toContain('1. 再観測 [Patterns That Work]')
+
+  // 同じセッションでもう一度起きても、同じ出来事の続きとして数えない
+  await editTurn(2)
+  expect(w.forks.length).toBe(2)
+  expect(w.files.get(FILE)).toContain(marked)
+  const again = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(again.text).not.toContain('同じセッションで記録済み')
+
+  const undo = await $.command.run({ command: 'learnings', args: 'undo 1', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(undo.text).toContain('再観測を取り消しました')
+  expect(w.files.get(FILE)).toContain('- 2026-10-02: 既存のA\n')
+  expect(w.files.get(FILE)).not.toContain('再観測')
+})
+
 test("after an append the band row shows a view button, and another mod's band row stays under it", async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on)

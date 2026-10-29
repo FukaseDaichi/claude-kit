@@ -119,7 +119,7 @@ describe('buildDigest', () => {
     const d = buildDigest([newer, older], [], 40_000)
     expect(d.sessions).toBe(2)
     expect(d.prompts).toBe(2)
-    expect(d.dropped).toBe(0)
+    expect(d.deferred).toBe(0)
     expect(d.lastAt).toBe(T0 + DAY)
     expect(d.text).toContain(`## ${localDate(T0)} · main · aaaaaaaa`)
     expect(d.text).toContain('古い発言')
@@ -127,13 +127,16 @@ describe('buildDigest', () => {
     expect(d.text.indexOf('古い発言')).toBeLessThan(d.text.indexOf('新しい発言'))
   })
 
-  test('drops the oldest sessions whole when over the limit', async () => {
+  test('over the limit it defers the newest prompts, and lastAt covers only what was included', async () => {
     const full = buildDigest([older, newer], [], 40_000)
     const d = buildDigest([older, newer], [], full.text.length - 1)
-    expect(d.dropped).toBe(1)
+    expect(d.deferred).toBe(1)
     expect(d.sessions).toBe(1)
-    expect(d.text).not.toContain('古い発言')
-    expect(d.text).toContain('新しい発言')
+    expect(d.text).toContain('古い発言')
+    expect(d.text).not.toContain('新しい発言')
+    expect(d.text).toContain('次の反映に回す')
+    // 印をここまで進めても、回した発言は次の反映で読まれる
+    expect(d.lastAt).toBe(T0)
   })
 
   test('lists unread files', async () => {
@@ -142,19 +145,34 @@ describe('buildDigest', () => {
     expect(d.text).toContain('/h/x.jsonl')
   })
 
-  test('sorts sessions by their last prompt, so a long-running session is dropped last', async () => {
-    const longRunning: TranscriptExcerpt = {
+  test('trims inside a long session too, so one session cannot exceed the limit', async () => {
+    const long: TranscriptExcerpt = {
       sessionId: 'cccccccc',
-      exchanges: [
-        { at: T0, assistant: '', user: '最初の発言' },
-        { at: T0 + 3 * DAY, assistant: '', user: '最近の発言' },
-      ],
+      exchanges: Array.from({ length: 50 }, (_, i) => ({ at: T0 + i * 60_000, assistant: '', user: `発言${i} ${'あ'.repeat(500)}` })),
     }
-    const full = buildDigest([longRunning, newer], [], 40_000)
-    expect(full.text.indexOf('新しい発言')).toBeLessThan(full.text.indexOf('最近の発言'))
-    const d = buildDigest([longRunning, newer], [], full.text.length - 1)
-    expect(d.text).toContain('最近の発言')
-    expect(d.text).not.toContain('新しい発言')
+    const d = buildDigest([long], [], 10_000)
+    expect(d.text.length).toBeLessThanOrEqual(10_000)
+    expect(d.prompts).toBeGreaterThan(0)
+    expect(d.deferred).toBe(50 - d.prompts)
+    expect(d.text).toContain('発言0 ')
+    expect(d.lastAt).toBe(T0 + (d.prompts - 1) * 60_000)
+  })
+
+  test('interleaved sessions are cut at one point in time across all sessions', async () => {
+    const a: TranscriptExcerpt = { sessionId: 'a', exchanges: [{ at: T0, assistant: '', user: 'a1' }, { at: T0 + 2 * DAY, assistant: '', user: 'a2' }] }
+    const b: TranscriptExcerpt = { sessionId: 'b', exchanges: [{ at: T0 + DAY, assistant: '', user: 'b1' }, { at: T0 + 3 * DAY, assistant: '', user: `b2 ${'x'.repeat(200)}` }] }
+    const full = buildDigest([b, a], [], 40_000)
+    const d = buildDigest([b, a], [], full.text.length - 1)
+    expect(d.deferred).toBe(1)
+    expect(d.text).toContain('a2')
+    expect(d.text).not.toContain('b2')
+    expect(d.lastAt).toBe(T0 + 2 * DAY)
+  })
+
+  test('always includes the oldest prompts even when nothing fits', async () => {
+    const d = buildDigest([older, newer], [], 10)
+    expect(d.prompts).toBe(1)
+    expect(d.lastAt).toBe(T0)
   })
 
   test('the header says from when the prompts were read', async () => {

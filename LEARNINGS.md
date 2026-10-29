@@ -28,6 +28,8 @@
 - 2026-10-29: Claude Code の会話 jsonl で利用者が実際に打った発言は type:"user" かつ origin.kind=="human" で見分ける。デスクトップアプリでは promptSource が "sdk" になり "typed" では拾えない。ツール結果・通知・isMeta も type:"user" で混ざる
 - 2026-10-29: Mod の $.fs.read / $.fs.write は 4 MiB を超えるファイルで reject する。会話 jsonl は1本 1〜2.6MB あり超えうるので、Mod で丸ごと読む設計には上限の扱いが要る
 - 2026-10-29: ~/.claude/projects/ のフォルダ名は作業フォルダのパスの非 ASCII 文字を - に置き換えるので、別のリポジトリと衝突しうる。jsonl の場所はフック入力の transcript_path から取り、フォルダ名を逆算しない
+- 2026-10-30: macOS の zsh には timeout コマンドがない（command not found: timeout）。長いコマンドの時間制限は、timeout で包まずに Bash ツールの timeout 引数で指定する
+- 2026-10-30: Claude Code 2.1.309 の型では、claude-code/testing の test の第2引数が TestBody | TestOptions なので、Parameters<Parameters<typeof test>[1]>[0] で $ の型を取ると TS2344 になる（claude plugin test 自体は通る）
 
 ## Open Questions
 （未解決の疑問）

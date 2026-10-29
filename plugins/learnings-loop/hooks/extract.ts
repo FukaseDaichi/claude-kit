@@ -2,11 +2,11 @@
 
 import type { EngineInterface, ModelUsage } from 'claude-code'
 
-import { parseStage1, parseStage2, type Candidate, type Dropped, type Verdict } from './candidates'
-import { hash } from './learnings-file'
+import { parseStage1, parseStage2, type Candidate, type Dropped } from './candidates'
+import { hash, observations } from './learnings-file'
 import { buildForkPrompt, buildJudgePrompt } from './prompts'
 import { addDiscarded, discardedTexts, getDiscarded } from './store'
-import { writeCandidates, type Rejudge, type WriteResult } from './writer'
+import { writeCandidates, type Planned, type Rejudge, type Target, type WriteResult } from './writer'
 
 export type ExtractOptions = {
   maxCandidates: number
@@ -43,15 +43,16 @@ function add(a: ModelUsage, b: ModelUsage): ModelUsage {
   }
 }
 
-/** 2段目: 既存の LEARNINGS.md と捨てた候補に照らして auto / drop に振り分ける。 */
+/** 2段目: 既存の LEARNINGS.md と捨てた候補に照らして auto / reinforce / drop に振り分ける。 */
 export function makeJudge($: EngineInterface, ctx: Pick<ExtractContext, 'repoKey' | 'options'>, usage: { total: ModelUsage }): Rejudge {
   return async (candidates, learningsText) => {
-    const verdicts = new Map<string, { verdict: Verdict; reason: string }>()
+    const verdicts: Awaited<ReturnType<Rejudge>> = new Map()
     if (candidates.length === 0) return verdicts
     const discarded = discardedTexts(await getDiscarded($, ctx.repoKey))
+    const obs = observations(learningsText)
     const r = await $.model.complete({
       model: ctx.options.judgeModel,
-      prompt: buildJudgePrompt({ learnings: learningsText, discarded, candidates }),
+      prompt: buildJudgePrompt({ learnings: learningsText, observations: obs, discarded, candidates }),
       maxTokens: 1024,
       effort: 'low',
       timeoutMs: ctx.options.judgeTimeoutMs,
@@ -62,8 +63,12 @@ export function makeJudge($: EngineInterface, ctx: Pick<ExtractContext, 'repoKey
       return verdicts
     }
     try {
-      const parsed = parseStage2(r.text, candidates.map(c => c.id))
-      for (const [id, v] of parsed) verdicts.set(id, v)
+      const parsed = parseStage2(r.text, candidates.map(c => c.id), obs.map(o => o.id))
+      for (const [id, v] of parsed) {
+        const o = v.target !== undefined ? obs.find(x => x.id === v.target) : undefined
+        const target: Target | undefined = o !== undefined ? { section: o.section, line: o.line } : undefined
+        verdicts.set(id, { verdict: v.verdict, reason: v.reason, ...(target !== undefined ? { target } : {}) })
+      }
     } catch (err) {
       $.ui.log(`judge: bad json (${String(err)})`, { to: 'debug' })
     }
@@ -117,11 +122,12 @@ export async function runExtraction($: EngineInterface, ctx: ExtractContext): Pr
     text = ''
   }
   const judged = await judge(stage1.candidates, text)
-  const auto: Candidate[] = []
+  const planned: Planned[] = []
   const dropped: Dropped[] = [...stage1.dropped]
   for (const c of stage1.candidates) {
     const v = judged.get(c.id)
-    if (v?.verdict === 'auto') auto.push(c)
+    if (v?.verdict === 'auto') planned.push(c)
+    else if (v?.verdict === 'reinforce' && v.target !== undefined) planned.push({ ...c, target: v.target })
     else dropped.push({ text: c.text, reason: v === undefined ? 'unjudged' : 'rejected', detail: v?.reason })
   }
   await addDiscarded(
@@ -142,7 +148,7 @@ export async function runExtraction($: EngineInterface, ctx: ExtractContext): Pr
       rejudge: judge,
       fromPending: false,
     },
-    auto,
+    planned,
   )
   result.dropped.push(...dropped)
   return { status: 'done', usage: usage.total, result }

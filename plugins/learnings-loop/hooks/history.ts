@@ -7,7 +7,7 @@ import { REFLECT_PREFIX } from './prompts'
 /** 発言は先頭から、直前の返答は末尾から、この字数で切る */
 export const USER_CHARS = 600
 export const ASSISTANT_CHARS = 300
-/** 抜粋全体の上限。超えたら古いセッションから丸ごと落とす */
+/** 抜粋全体の上限。超えたら新しい発言から次の反映に回す */
 export const DIGEST_CHARS = 40_000
 /** 「どこまで読んだか」の印がないときに読む期間 */
 export const DEFAULT_WINDOW_MS = 30 * 86_400_000
@@ -18,7 +18,8 @@ export type Exchange = { at: number; assistant: string; user: string }
 export type TranscriptExcerpt = { sessionId: string; cwd?: string; branch?: string; exchanges: Exchange[] }
 /** 抜粋に入れられなかったログ。reason がなければ 4 MiB 超 */
 export type Unread = { path: string; size: number; reason?: string }
-export type Digest = { text: string; sessions: number; prompts: number; dropped: number; lastAt?: number }
+/** deferred は上限のため次の反映に回した発言の数。lastAt はこの日時までの発言をすべて入れた、という印 */
+export type Digest = { text: string; sessions: number; prompts: number; deferred: number; lastAt?: number }
 
 type Block = { type?: unknown; text?: unknown; name?: unknown }
 type Rec = {
@@ -117,35 +118,47 @@ function normPath(path: string): string {
   return /^[A-Za-z]:/.test(p) ? p.toLowerCase() : p
 }
 
-/** 抜粋の Markdown を作る。maxChars を超えたら、最後の発言が古いセッションから丸ごと落とす */
+/**
+ * 抜粋の Markdown を作る。maxChars を超えたら、新しい発言から次の反映に回す。
+ * 入れるのは「ある日時までの発言すべて」なので、返す lastAt まで読んだとして印を進めても取りこぼさない。
+ */
 export function buildDigest(excerpts: readonly TranscriptExcerpt[], unread: readonly Unread[], maxChars: number, since?: number): Digest {
-  // 最後の発言の順。長く続いている今のセッションが最後に来て、上限で落ちにくい
-  const sessions = excerpts
-    .filter(x => x.exchanges.length > 0)
-    .slice()
-    .sort((a, b) => lastAt(a) - lastAt(b))
-  let dropped = 0
-  for (;;) {
-    const text = render(sessions, unread, dropped, since)
-    if (text.length <= maxChars || sessions.length <= 1) {
-      const prompts = sessions.reduce((n, s) => n + s.exchanges.length, 0)
-      const ats = sessions.flatMap(s => s.exchanges.map(x => x.at))
-      return { text, sessions: sessions.length, prompts, dropped, lastAt: ats.length > 0 ? Math.max(...ats) : undefined }
-    }
-    sessions.shift()
-    dropped++
+  const all = excerpts.flatMap(x => x.exchanges.map(e => e.at))
+  const times = [...new Set(all)].sort((a, b) => a - b)
+  const upTo = (cutoff: number) => {
+    const sessions = excerpts
+      .map(x => ({ ...x, exchanges: x.exchanges.filter(e => e.at <= cutoff) }))
+      .filter(x => x.exchanges.length > 0)
+      .sort((a, b) => firstAt(a) - firstAt(b))
+    const prompts = sessions.reduce((n, s) => n + s.exchanges.length, 0)
+    const deferred = all.length - prompts
+    return { text: render(sessions, unread, deferred, since), sessions: sessions.length, prompts, deferred }
   }
+  const last = times[times.length - 1]
+  if (last === undefined) return { ...upTo(-Infinity), lastAt: undefined }
+  const full = upTo(last)
+  if (full.text.length <= maxChars) return { ...full, lastAt: last }
+  // 入る範囲でいちばん新しい日時を二分探索で探す。1つも入らなくても、いちばん古い日時の発言は入れる
+  let lo = 0
+  let hi = times.length - 1
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (upTo(times[mid] as number).text.length <= maxChars) lo = mid
+    else hi = mid - 1
+  }
+  const cutoff = times[lo] as number
+  return { ...upTo(cutoff), lastAt: cutoff }
 }
 
-function lastAt(x: TranscriptExcerpt): number {
-  return x.exchanges[x.exchanges.length - 1]?.at ?? 0
+function firstAt(x: TranscriptExcerpt): number {
+  return x.exchanges[0]?.at ?? 0
 }
 
-function render(sessions: readonly TranscriptExcerpt[], unread: readonly Unread[], dropped: number, since?: number): string {
+function render(sessions: readonly TranscriptExcerpt[], unread: readonly Unread[], deferred: number, since?: number): string {
   const prompts = sessions.reduce((n, s) => n + s.exchanges.length, 0)
   const lines = ['# 会話履歴の抜粋（learnings-loop）', '']
   const from = since !== undefined ? `${new Date(since).toISOString()} より後の ` : ''
-  lines.push(`${from}${sessions.length} セッション・${prompts} 件の発言。${dropped > 0 ? `古いセッション ${dropped} 件は上限のため省略。` : ''}`)
+  lines.push(`${from}${sessions.length} セッション・${prompts} 件の発言。${deferred > 0 ? `上限のため、これより後の発言 ${deferred} 件は次の反映に回す。` : ''}`)
   for (const s of sessions) {
     const first = s.exchanges[0]?.at ?? 0
     lines.push('', `## ${[localDate(first), s.branch, s.sessionId.slice(0, 8)].filter(v => v !== undefined && v !== '').join(' · ')}`)

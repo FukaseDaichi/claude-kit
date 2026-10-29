@@ -33,6 +33,7 @@ const REASON_JA: Record<string, string> = {
   invalid: '形式不正',
   unjudged: '判定不能',
   unverified: '根拠が未確認',
+  'same-session': '同じセッションで記録済み',
 }
 
 export function formatStatus(d: StatusData): string {
@@ -63,11 +64,12 @@ export function formatStatus(d: StatusData): string {
 
   const recent = [...d.appended].reverse().slice(0, 10)
   lines.push('')
-  lines.push(`直近の自動追記（${recent.length} 件表示 / 取り消しは \`/learnings undo <番号>\`）`)
+  lines.push(`直近の自動追記・再観測（${recent.length} 件表示 / 取り消しは \`/learnings undo <番号>\`）`)
   if (recent.length === 0) lines.push('  （なし）')
   recent.forEach((r, i) => {
     const flag = r.isUndone ? ' [取り消し済み]' : r.fromPending ? ' [保留分]' : ''
-    lines.push(`  ${i + 1}. [${r.section}] ${r.text}${flag}`)
+    const kind = r.previousLine !== undefined ? '再観測 ' : ''
+    lines.push(`  ${i + 1}. ${kind}[${r.section}] ${r.text}${flag}`)
     if (r.evidence !== '') lines.push(`     根拠(${r.evidenceKind}): ${r.evidence.slice(0, 120)}`)
   })
 

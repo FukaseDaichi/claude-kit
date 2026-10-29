@@ -31,6 +31,7 @@ import {
   parse,
   principles,
   removeLine,
+  replaceLine,
 } from './learnings-file'
 import { buildConsolidatePrompt, REFLECT_PREFIX, type HistoryHandoff } from './prompts'
 import { formatStatus } from './status'
@@ -271,17 +272,21 @@ async function bumpUsage($: EngineInterface, u: ModelUsage, runs = 0): Promise<v
 
 async function noteWritten($: EngineInterface, written: readonly AppendedRecord[], fromPending: boolean): Promise<void> {
   if (written.length === 0) return
+  // 帯の「今セッション +n」は新しく足した行だけ。再観測は件数を増やさない
+  const added = written.filter(r => r.previousLine === undefined).length
+  const counted = written.length - added
   await update($, appendedAtom, a => ({
-    count: a.count + (fromPending ? 0 : written.length),
-    fromPending: a.fromPending + (fromPending ? written.length : 0),
+    count: a.count + (fromPending ? 0 : added),
+    fromPending: a.fromPending + (fromPending ? added : 0),
   }))
   const s = await read($, sessionAtom)
   if (s.file !== null) {
     const text = await readFile($, s.file)
     if (text !== undefined) await refreshNotice($, text)
   }
-  $.ui.toast(`📚 ${fromPending ? '保留していた' : ''}${written.length}件を LEARNINGS.md に追記（u で取り消し）`)
-  for (const r of written) $.ui.log(`appended [${r.section}] ${r.text}`, { to: 'debug' })
+  const parts = [added > 0 ? `${added}件を追記` : '', counted > 0 ? `${counted}件を再観測として数えた` : ''].filter(p => p !== '')
+  $.ui.toast(`📚 ${fromPending ? '保留していた' : ''}LEARNINGS.md に${parts.join('・')}（u で取り消し）`)
+  for (const r of written) $.ui.log(`${r.previousLine === undefined ? 'appended' : 'reobserved'} [${r.section}] ${r.text}`, { to: 'debug' })
 }
 
 async function consumePending($: EngineInterface): Promise<void> {
@@ -378,7 +383,9 @@ async function undoRecord($: EngineInterface, rec: AppendedRecord): Promise<stri
   const text = await readFile($, s.file)
   if (text === undefined) return 'LEARNINGS.md を読めませんでした。'
   if (!isSection(rec.section)) return `不明なセクション: ${rec.section}`
-  const r = removeLine(text, rec.section, rec.line)
+  // 再観測なら数える前の行に戻す。新しく足した行なら消す
+  const prev = rec.previousLine
+  const r = prev !== undefined ? replaceLine(text, rec.section, rec.line, prev) : removeLine(text, rec.section, rec.line)
   if (!r.ok) {
     return r.reason === 'not-found' ? '同じ行が残っていないので触りません（手で直した後のようです）。' : `取り消せません（${r.reason}）`
   }
@@ -386,6 +393,10 @@ async function undoRecord($: EngineInterface, rec: AppendedRecord): Promise<stri
   const after = await readFile($, s.file)
   if (after === undefined || hasLine(after, rec.section, rec.line)) return '書き込み後の確認に失敗しました。'
   await markUndone($, s.repoKey, rec.id)
+  if (prev !== undefined) {
+    await refreshNotice($, after)
+    return `再観測を取り消しました: [${rec.section}] ${rec.text}`
+  }
   await addDiscarded($, s.repoKey, [{ text: rec.text, section: rec.section, reason: 'undone' }], await $.clock.now())
   await refreshNotice($, after)
   return `取り消しました: [${rec.section}] ${rec.text}`
@@ -629,7 +640,7 @@ async function collectHistory($: EngineInterface): Promise<HistoryHandoff> {
     return folder(`抜粋を書けない: ${String(err)}`)
   }
   pendingCursor = digest.lastAt
-  return { kind: 'digest', path, since: sinceIso, sessions: digest.sessions, prompts: digest.prompts, dropped: digest.dropped, unread: unread.length }
+  return { kind: 'digest', path, since: sinceIso, sessions: digest.sessions, prompts: digest.prompts, deferred: digest.deferred, unread: unread.length }
 }
 
 /**

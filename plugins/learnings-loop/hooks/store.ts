@@ -31,6 +31,8 @@ export type AppendedRecord = {
   id: string
   section: string
   line: string
+  /** 再観測として数えたときの、数える前の行。新しく足した行ならない */
+  previousLine?: string
   text: string
   evidence: string
   evidenceKind: string

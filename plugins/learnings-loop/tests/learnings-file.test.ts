@@ -9,8 +9,13 @@ import {
   isLearningsPath,
   lastConsolidated,
   parse,
+  observations,
   principles,
   removeLine,
+  reobserve,
+  reobserved,
+  replaceLine,
+  withoutReobserved,
 } from '../hooks/learnings-file'
 
 const SAMPLE = `# Project Learnings
@@ -153,6 +158,34 @@ describe('removeLine', () => {
   test('does not remove a same line from another section', async () => {
     const r = removeLine(SAMPLE, 'Mistakes to Avoid', '- 2026-10-01: 既存のA')
     expect(r.ok).toBe(false)
+  })
+})
+
+describe('reobservation', () => {
+  test('numbers raw observations across the four sections, not the principles', async () => {
+    const obs = observations(SAMPLE)
+    expect(obs.map(o => o.id)).toEqual(['L1', 'L2', 'L3', 'L4', 'L5'])
+    expect(obs[2]).toEqual({ id: 'L3', section: 'Mistakes to Avoid', line: '- 2026-10-03: 既存のC' })
+    expect(obs.some(o => o.line.includes('原則'))).toBe(false)
+  })
+
+  test('adds and counts up a mark at the end of the line', async () => {
+    const once = reobserve('- 2026-10-01: 既存のA', '2026-10-20')
+    expect(once).toBe('- 2026-10-01: 既存のA（再観測 1回・最終 2026-10-20）')
+    const twice = reobserve(once, '2026-10-25')
+    expect(twice).toBe('- 2026-10-01: 既存のA（再観測 2回・最終 2026-10-25）')
+    expect(reobserved(twice)).toEqual({ count: 2, last: '2026-10-25' })
+    expect(withoutReobserved(twice)).toBe('- 2026-10-01: 既存のA')
+    expect(reobserved('- 2026-10-01: 既存のA')).toBe(undefined)
+  })
+
+  test('replaceLine swaps the exact line only in its section', async () => {
+    const r = replaceLine(SAMPLE, 'Patterns That Work', '- 2026-10-01: 既存のA', '- 2026-10-01: 既存のA（再観測 1回・最終 2026-10-20）')
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.text).toContain('- 2026-10-01: 既存のA（再観測 1回・最終 2026-10-20）')
+    expect(r.text.split('\n').length).toBe(SAMPLE.split('\n').length)
+    expect(replaceLine(SAMPLE, 'Mistakes to Avoid', '- 2026-10-01: 既存のA', 'x').ok).toBe(false)
   })
 })
 

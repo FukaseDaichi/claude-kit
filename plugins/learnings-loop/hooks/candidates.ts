@@ -38,6 +38,7 @@ export type DropReason =
   | 'invalid'
   | 'unjudged'
   | 'unverified'
+  | 'same-session'
 
 export type Dropped = { text: string; reason: DropReason; detail?: string }
 
@@ -170,27 +171,35 @@ export function parseStage1(raw: string, options: Stage1Options): Stage1Result {
   return { candidates, dropped }
 }
 
-export type Verdict = 'auto' | 'drop'
+export type Verdict = 'auto' | 'reinforce' | 'drop'
+
+/** 2段目の判定。reinforce のときは target に既存の生の観察の ID（L1, L2, …）が入る */
+export type Judged = { verdict: Verdict; reason: string; target?: string }
 
 /**
- * 2段目の返答を検証する。候補IDごとの判定を返す。IDが足りない・判定が2値でない
- * ものは `drop`（理由: unjudged）として扱えるよう、呼び出し側が欠けを埋める。
+ * 2段目の返答を検証する。候補IDごとの判定を返す。IDが足りない・判定が3値でない・
+ * reinforce なのに targets にない ID を指すものは返さない（呼び出し側が unjudged として扱う）。
  */
-export function parseStage2(raw: string, ids: readonly string[]): Map<string, { verdict: Verdict; reason: string }> {
+export function parseStage2(raw: string, ids: readonly string[], targets: readonly string[] = []): Map<string, Judged> {
   const value = extractJson(raw)
   const list: unknown[] = Array.isArray(value)
     ? value
     : value && typeof value === 'object' && Array.isArray((value as { verdicts?: unknown }).verdicts)
       ? ((value as { verdicts: unknown[] }).verdicts)
       : []
-  const out = new Map<string, { verdict: Verdict; reason: string }>()
+  const out = new Map<string, Judged>()
   for (const item of list) {
     if (!item || typeof item !== 'object') continue
     const o = item as Record<string, unknown>
     const id = typeof o.id === 'string' ? o.id : ''
     const verdict = typeof o.verdict === 'string' ? o.verdict.trim().toLowerCase() : ''
     const reason = typeof o.reason === 'string' ? o.reason : ''
+    const target = typeof o.target === 'string' ? o.target.trim() : ''
     if (!ids.includes(id)) continue
+    if (verdict === 'reinforce') {
+      if (targets.includes(target)) out.set(id, { verdict, reason, target })
+      continue
+    }
     if (verdict !== 'auto' && verdict !== 'drop') continue
     out.set(id, { verdict, reason })
   }
