@@ -129,6 +129,16 @@ export async function declineInit($: EngineInterface, repoKey: string): Promise<
   await $.store.set(k(repoKey, 'initDeclined'), true)
 }
 
+/** 「学びを反映」で会話履歴をどこまで読んだか（ms）。まだ読んでいなければ undefined。 */
+export async function getHistoryCursor($: EngineInterface, repoKey: string): Promise<number | undefined> {
+  const v = await $.store.get(k(repoKey, 'historyCursor'))
+  return typeof v === 'number' ? v : undefined
+}
+
+export async function setHistoryCursor($: EngineInterface, repoKey: string, at: number): Promise<void> {
+  await $.store.set(k(repoKey, 'historyCursor'), at)
+}
+
 /** 2段目に渡す「捨てた候補」の本文一覧（機密は除く）。 */
 export function discardedTexts(list: readonly DiscardedCandidate[]): string[] {
   return list.filter(d => d.text !== '').map(d => d.text)

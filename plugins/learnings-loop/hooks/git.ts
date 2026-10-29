@@ -40,3 +40,13 @@ export async function commitOnly(run: Run, cwd: string, path: string, message: s
   if ((await git(run, cwd, ['add', '--', path])) === undefined) return false
   return (await git(run, cwd, ['commit', '-m', message, '--', path])) !== undefined
 }
+
+/** `git worktree list --porcelain` の worktree の絶対パス。失敗は [] */
+export async function worktreeRoots(run: Run, cwd: string): Promise<string[]> {
+  const out = await git(run, cwd, ['worktree', 'list', '--porcelain'])
+  if (out === undefined) return []
+  return out
+    .split('\n')
+    .filter(l => l.startsWith('worktree '))
+    .map(l => l.slice('worktree '.length).trim())
+}

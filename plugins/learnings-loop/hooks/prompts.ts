@@ -94,3 +94,31 @@ export function buildJudgePrompt(a: JudgePromptArgs): PromptBlock[] {
 
   return [{ text: head, cache: true }, { text: discarded + body }]
 }
+
+/** 「学びを反映」で会話履歴をどう渡すか。 */
+export type HistoryHandoff =
+  | { kind: 'digest'; path: string; sessions: number; prompts: number; dropped: number; unread: number }
+  /** 抜粋を作れなかったので、Claude に自分で読ませる。since は YYYY-MM-DD */
+  | { kind: 'folder'; dir: string; since: string; reason: string }
+  | { kind: 'none'; reason: string }
+
+/** 「学びを反映」で送るプロンプト。 */
+export function buildConsolidatePrompt(h: HistoryHandoff): string {
+  const lines = [
+    'learnings-loop:consolidate-learnings スキルを実行して、LEARNINGS.md・会話履歴・指示ファイル・スキル・README を見直し、置き直しの案を出してください。',
+  ]
+  if (h.kind === 'digest') {
+    const notes = [
+      h.dropped > 0 ? `古いセッション ${h.dropped} 件は上限のため省略` : '',
+      h.unread > 0 ? `4 MiB を超えて未読のログ ${h.unread} 件（抜粋の末尾に一覧）` : '',
+    ].filter(s => s !== '')
+    lines.push(`会話履歴の抜粋: ${h.path}（${h.sessions} セッション・${h.prompts} 件の発言${notes.length > 0 ? `。${notes.join('、')}` : ''}）`)
+  } else if (h.kind === 'folder') {
+    lines.push(
+      `会話履歴の抜粋は作れなかった（${h.reason}）。代わりに ${h.dir} の jsonl から \`"kind":"human"\` を含む行を Grep で拾い、${h.since} 以降の利用者の発言を読む。`,
+    )
+  } else {
+    lines.push(`今回は会話履歴は使わない（${h.reason}）。`)
+  }
+  return lines.join('\n')
+}
