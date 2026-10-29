@@ -2,23 +2,18 @@
 
 リポジトリ全体がプラグインマーケットプレイス。`plugins/<name>/` が1プラグインで、main に push すると自動更新で利用者に届く。README.md は利用者向けなので開発の話は書かない。
 
+置き場所: 設計は `docs/`、作業ごとの手順はスキル（`.claude/skills/`）、経緯は git と `LEARNINGS.md`、ここには毎回守る決まりだけ。
+
 ## プラグインの分け方
 
 - Mod は1つで1プラグイン（Mod ごとに入れる・入れないを選べるようにする）
 - スキルはテーマごとに1プラグイン。既存のテーマに合えばそこに足す
 - プラグイン名は短い kebab-case（スキルは `<プラグイン名>:<スキル名>` で呼ばれる）
-
-## プラグインを足すとき
-
-- `plugin.json` に `version` を書かない（commit ごとに新しい版として扱わせる。validate の警告は無視）
-- `plugin.json` と `.claude-plugin/marketplace.json` の `name`・`description` を揃える
-- README.md の一覧表に `[<name>](plugins/<name>/)` の形で1行足す
-- プラグインの README は git-band のものを見本にする
+- プラグインを足すときは adding-plugin スキルに従う
 
 ## 守ること
 
-- 帯（`AbovePrompt`）を描く Mod は `await next(e)` で下の Mod の行を受け取り、自分の行の下に積む（帯は全 Mod で1本なので、返すだけだとほかの Mod の帯を消す）。git-band の `ui.render` が見本
-- 帯の行は全 Mod で同じ形にする: 左にアイコン・太字の名前・薄い詳細（`·` 区切り、0 の項目は出さない）、右端にボタン。ボタンは `variant="secondary"`、いちばん勧める操作だけ `primary`。キーの印（`hotkey`）や操作方法の説明文は付けない
+- Mod を書く・直すとき（特に帯 `AbovePrompt` を描くとき）は mod-development スキルに従う
 - プラグインの外のファイルを参照しない（`../../shared` など）。プラグインは別々にキャッシュへコピーされるので、入れた先で動かなくなる
 - commit 前に `scripts/check.sh` を通す。手元の版で試すときは `claude --plugin-dir plugins/<name>`
 - 公開リポジトリなので、秘密情報・会社の情報・個人のパスを入れない。仕事用のスキルは別の private マーケットプレイスに置く
