@@ -8,7 +8,18 @@ import type { EngineInterface, ModelUsage, PluginOptions, Register, RenderElemen
 
 import type { Candidate, DropReason } from './candidates'
 import { makeJudge, runExtraction, type ExtractOptions } from './extract'
-import { commitOnly, commonDir, hasChanges } from './git'
+import { commitOnly, commonDir, hasChanges, worktreeRoots } from './git'
+import {
+  buildDigest,
+  DEFAULT_WINDOW_MS,
+  DIGEST_CHARS,
+  encodeProjectDir,
+  isInside,
+  MAX_READ_BYTES,
+  parseTranscript,
+  type TranscriptExcerpt,
+  type Unread,
+} from './history'
 import {
   countObservations,
   daysBetween,
@@ -21,17 +32,20 @@ import {
   principles,
   removeLine,
 } from './learnings-file'
+import { buildConsolidatePrompt, type HistoryHandoff } from './prompts'
 import { formatStatus } from './status'
 import {
   addDiscarded,
   declineInit,
   getAppended,
   getDiscarded,
+  getHistoryCursor,
   getPending,
   isInitDeclined,
   markUndone,
   PENDING_TTL_MS,
   removeDiscarded,
+  setHistoryCursor,
   setPending,
   type AppendedRecord,
   type PendingCandidate,
@@ -45,8 +59,6 @@ const SECTION_ID = 'learnings-loop:principles'
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
 const FILE_NAME = 'LEARNINGS.md'
 const COMMIT_MESSAGE = 'LEARNINGS.md を更新（learnings-loop）'
-const CONSOLIDATE_PROMPT =
-  'learnings-loop:consolidate-learnings スキルを実行して、LEARNINGS.md の生の観察を原則へ統合してください。'
 
 const sessionAtom = atom({ plugin: 'learnings-loop', key: 'session' } as const, {
   file: null,
@@ -113,6 +125,10 @@ let composeSeen = false
 /** 原則を発言の添付（context）で渡したか。会話圧縮のあとは渡し直す */
 let promptInjected = false
 let poller: { cancel: () => void } | undefined
+/** 今のセッションの jsonl の場所（classic.UserPromptSubmit が届いたときだけ分かる） */
+let transcriptPath: string | undefined
+/** 反映に渡した抜粋の最後の発言の日時。反映のターンが中断されずに終わったら「どこまで読んだか」に書く */
+let pendingCursor: number | undefined
 
 const ZERO_USAGE: ModelUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
@@ -518,17 +534,85 @@ async function reflect($: EngineInterface): Promise<void> {
   await update($, noticeAtom, n => ({ ...n, isReflecting: true }))
   playSound($, 'sounds/press.wav')
   try {
-    await $.prompt.submit({ text: CONSOLIDATE_PROMPT })
+    pendingCursor = undefined
+    const history = await collectHistory($).catch((err): HistoryHandoff => ({ kind: 'none', reason: String(err) }))
+    await $.prompt.submit({ text: buildConsolidatePrompt(history) })
   } catch (err) {
     await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
     throw err
   }
 }
 
+/** ~/.claude/projects（CLAUDE_CONFIG_DIR があればその下）。jsonl の場所が分かっていればそこから取る */
+async function projectsRoot($: EngineInterface): Promise<string | undefined> {
+  if (transcriptPath !== undefined) return dirOf(dirOf(transcriptPath))
+  const config = await $.env.get('CLAUDE_CONFIG_DIR').catch(() => undefined)
+  if (config !== undefined && config !== '') return `${config.replace(/[\\/]+$/, '')}/projects`
+  const home = (await $.env.get('HOME').catch(() => undefined)) || (await $.env.get('USERPROFILE').catch(() => undefined))
+  return home !== undefined && home !== '' ? `${home.replace(/[\\/]+$/, '')}/.claude/projects` : undefined
+}
+
+/**
+ * 前回の反映以降の、このリポジトリのセッションの会話履歴を抜粋にして .git の中に書く。
+ * 読めなければ、Claude に自分で読ませるためにフォルダの場所を返す。
+ */
+async function collectHistory($: EngineInterface): Promise<HistoryHandoff> {
+  const s = await read($, sessionAtom)
+  const common = s.repoKey?.replace(/[\\/]+$/, '')
+  if (common === undefined || !/[\\/]\.git$/.test(common)) return { kind: 'none', reason: 'Git の作業フォルダが分からない' }
+  const mainRoot = dirOf(common)
+  const now = await $.clock.now()
+  const since = (await getHistoryCursor($, common)) ?? now - DEFAULT_WINDOW_MS
+  const root = await projectsRoot($)
+  if (root === undefined) return { kind: 'none', reason: 'ホームフォルダが分からない' }
+  const prefix = encodeProjectDir(mainRoot)
+  const folder = (reason: string): HistoryHandoff => ({ kind: 'folder', dir: `${root}/${prefix}`, since: localDate(since), reason })
+
+  let dirs: string[]
+  try {
+    dirs = (await $.fs.list(root)).filter(e => e.kind === 'dir' && e.name.startsWith(prefix)).map(e => `${root}/${e.name}`)
+  } catch (err) {
+    return folder(`履歴のフォルダを読めない: ${String(err)}`)
+  }
+  const roots = [mainRoot, ...(await worktreeRoots((argv, init) => $.process.run(argv, init), mainRoot))]
+
+  const excerpts: TranscriptExcerpt[] = []
+  const unread: Unread[] = []
+  for (const dir of dirs) {
+    const entries = await $.fs.list(dir).catch(() => [])
+    for (const f of entries) {
+      if (f.kind !== 'file' || !f.name.endsWith('.jsonl') || f.mtimeMs <= since) continue
+      const path = `${dir}/${f.name}`
+      if (f.size > MAX_READ_BYTES) {
+        unread.push({ path, size: f.size })
+        continue
+      }
+      const text = await readFile($, path)
+      if (text === undefined) continue
+      const x = parseTranscript(text, since)
+      if (x.cwd !== undefined && isInside(x.cwd, roots)) excerpts.push(x)
+    }
+  }
+
+  const digest = buildDigest(excerpts, unread, DIGEST_CHARS)
+  if (digest.prompts === 0 && unread.length === 0) return { kind: 'none', reason: '前回以降の発言なし' }
+  const path = `${common}/learnings-loop/history.md`
+  try {
+    await $.fs.write(path, digest.text)
+  } catch (err) {
+    return folder(`抜粋を書けない: ${String(err)}`)
+  }
+  pendingCursor = digest.lastAt
+  return { kind: 'digest', path, sessions: digest.sessions, prompts: digest.prompts, dropped: digest.dropped, unread: unread.length }
+}
+
 /** 反映のターンが終わったら、件数を読み直して音と通知で知らせる。 */
 async function reflected($: EngineInterface, isAborted: boolean): Promise<void> {
   await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
   const s = await read($, sessionAtom)
+  const cursor = pendingCursor
+  pendingCursor = undefined
+  if (!isAborted && cursor !== undefined && s.repoKey !== null) await setHistoryCursor($, s.repoKey.replace(/[\\/]+$/, ''), cursor)
   const text = s.file !== null ? await readFile($, s.file) : undefined
   if (text !== undefined) await refreshNotice($, text)
   if (isAborted) return
@@ -654,6 +738,12 @@ export const register: Register = (on, rawOptions) => {
     promptInjected = true
     $.ui.log('principles attached to the prompt (prompt.compose has not reached this mod)', { to: 'debug' })
     return next({ ...e, context: [...(e.context ?? []), principlesBlock(s.file)] })
+  })
+
+  // 反映で会話履歴を探すために、今のセッションの jsonl の場所を覚える（届かない環境では環境変数から求める）
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    if (typeof e.transcript_path === 'string' && e.transcript_path !== '') transcriptPath = e.transcript_path
+    return next(e)
   })
 
   on('tool.call', async ($, e, next) => {

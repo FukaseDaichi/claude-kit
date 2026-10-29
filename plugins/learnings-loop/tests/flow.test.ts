@@ -1,7 +1,7 @@
 // フック全体の流れ。テストの `on` はプラグインの下に立ち、エンジンの代わりに答える。
 
 import { expect, mock, test } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { FsEntry, On } from 'claude-code'
 
 const ROOT = '/repo'
 const FILE = `${ROOT}/LEARNINGS.md`
@@ -61,6 +61,14 @@ type World = {
   /** 会話に出した行（$.ui.log） */
   logs: string[]
   toasts: string[]
+  /** $.fs.read で読まれたパス */
+  reads: string[]
+  /** true なら $.fs.list が失敗する */
+  listFails: boolean
+  /** ファイルごとのサイズ（なければ本文の長さ） */
+  sizes: Map<string, number>
+  /** ファイルごとの更新日時（なければ 0） */
+  mtimes: Map<string, number>
 }
 
 /**
@@ -81,7 +89,32 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     runs: [],
     logs: [],
     toasts: [],
+    reads: [],
+    listFails: false,
+    sizes: init.sizes ?? new Map(),
+    mtimes: init.mtimes ?? new Map(),
   }
+  on('fs.list', (_, e) => {
+    if (w.listFails) throw new Error('EACCES')
+    const dir = norm(e.path).replace(/\/+$/, '')
+    const seen = new Map<string, FsEntry>()
+    for (const path of w.files.keys()) {
+      if (!path.startsWith(`${dir}/`)) continue
+      const [name = '', ...rest] = path.slice(dir.length + 1).split('/')
+      if (seen.has(name)) continue
+      const isDir = rest.length > 0
+      seen.set(name, {
+        name,
+        kind: isDir ? 'dir' : 'file',
+        size: isDir ? 0 : (w.sizes.get(path) ?? (w.files.get(path) ?? '').length),
+        mtimeMs: isDir ? 0 : (w.mtimes.get(path) ?? 0),
+        isLink: false,
+      })
+    }
+    if (seen.size === 0) throw new Error(`ENOENT ${e.path}`)
+    return { value: [...seen.values()] }
+  })
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
   on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
   on('session.cwd', () => ({ value: ROOT }))
   on('session.id', () => ({ value: 'test-session' }))
@@ -92,6 +125,7 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     // プラグイン同梱のファイルは、プラグインがどこに置かれていても固定の答えを返す
     if (path.endsWith('/criteria/CRITERIA.md')) return { value: '' }
     const text = w.files.get(path.endsWith('/templates/LEARNINGS.md') ? TEMPLATE : path)
+    w.reads.push(path)
     if (text === undefined) throw new Error(`ENOENT ${e.path}`)
     return { value: text }
   })
@@ -657,4 +691,119 @@ test('with the injection off, neither route carries the principles', { options: 
   expect(contexts[0]).toBeUndefined()
   const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
   expect(composed.sections.some(s => s.id === 'learnings-loop:principles')).toBe(false)
+})
+
+// ---- 学びを反映: 会話履歴の抜粋 ----------------------------------------------------
+
+const NOW = Date.UTC(2026, 9, 22, 3, 0, 0)
+const PROJECTS = '/home/u/.claude/projects'
+const DIGEST = '/repo/.git/learnings-loop/history.md'
+const HISTORY_GIT = {
+  'rev-parse --path-format=absolute --git-common-dir': '/repo/.git',
+  'worktree list --porcelain': 'worktree /repo\nHEAD abc\nbranch refs/heads/main\n',
+}
+
+function jsonl(cwd: string, sessionId: string, prompts: readonly [string, number][]): string {
+  return prompts
+    .flatMap(([text, at]) => [
+      JSON.stringify({ type: 'assistant', cwd, sessionId, gitBranch: 'main', message: { content: [{ type: 'text', text: `${text}への前置き` }] } }),
+      JSON.stringify({ type: 'user', origin: { kind: 'human' }, cwd, sessionId, gitBranch: 'main', timestamp: new Date(at).toISOString(), message: { content: text } }),
+    ])
+    .join('\n')
+}
+
+/** このリポジトリ（/repo とそのサブフォルダ）と、名前が前方一致する別のリポジトリ（/repository）の履歴 */
+function historyWorld(on: On, extra: { sizes?: Map<string, number> } = {}) {
+  const at = NOW - 86_400_000
+  const files = new Map([
+    [FILE, INITIAL],
+    [`${PROJECTS}/-repo/s1.jsonl`, jsonl('/repo', 's1', [['ルートでの発言', at]])],
+    [`${PROJECTS}/-repo-sub/s2.jsonl`, jsonl('/repo/sub', 's2', [['サブフォルダでの発言', at + 1000]])],
+    [`${PROJECTS}/-repository/s3.jsonl`, jsonl('/repository', 's3', [['別リポジトリの発言', at + 2000]])],
+  ])
+  const mtimes = new Map([...files.keys()].map(k => [k, at + 2000] as [string, number]))
+  return world(on, { files, mtimes, sizes: extra.sizes, git: HISTORY_GIT })
+}
+
+async function startReflecting($: Parameters<Parameters<typeof test>[1]>[0], on: On) {
+  mock.clock(on, { now: NOW })
+  mock.store(on)
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('audio.play', () => ({ value: undefined }))
+  const prompts: string[] = []
+  on('prompt.submit', (_, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+  await $.session.start(ON_MAIN)
+  const press = async () => {
+    const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+    await ui.press({ key: 'reflect' })
+    await ui.unmount()
+  }
+  const complete = (isAborted: boolean) =>
+    $.turn.complete({ answer: 'done', durationMs: 1, isAborted, turnId: 't', reason: isAborted ? 'aborted' : 'answer' })
+  return { prompts, press, complete }
+}
+
+test("reflect writes a digest of this repository's sessions and passes its path", async ($, on) => {
+  const w = historyWorld(on)
+  const r = await startReflecting($, on)
+
+  await r.press()
+
+  expect(r.prompts.length).toBe(1)
+  expect(r.prompts[0]).toContain(DIGEST)
+  expect(r.prompts[0]).toContain('2 セッション')
+  const digest = w.files.get(DIGEST) ?? ''
+  expect(digest).toContain('ルートでの発言')
+  expect(digest).toContain('サブフォルダでの発言')
+  expect(digest).toContain('への前置き')
+  expect(digest).not.toContain('別リポジトリの発言')
+})
+
+test('the history cursor advances only after an unaborted reflect turn', async ($, on) => {
+  const w = historyWorld(on)
+  const r = await startReflecting($, on)
+
+  await r.press()
+  await r.complete(true)
+  w.files.delete(DIGEST)
+  await r.press()
+  expect(w.files.get(DIGEST) ?? '').toContain('ルートでの発言')
+
+  await r.complete(false)
+  await r.press()
+  expect(r.prompts[2]).toContain('会話履歴は使わない')
+})
+
+test('a jsonl over 4 MiB is listed as unread, not read', async ($, on) => {
+  const big = `${PROJECTS}/-repo/s1.jsonl`
+  const w = historyWorld(on, { sizes: new Map([[big, 5 * 1024 * 1024]]) })
+  const r = await startReflecting($, on)
+
+  await r.press()
+
+  const digest = w.files.get(DIGEST) ?? ''
+  expect(digest).toContain('未読')
+  expect(digest).toContain('s1.jsonl')
+  expect(digest).not.toContain('ルートでの発言')
+  expect(w.reads.includes(big)).toBe(false)
+  expect(r.prompts[0]).toContain('未読')
+})
+
+test('when the history folder cannot be listed, the prompt names the folder and the cursor stays', async ($, on) => {
+  const w = historyWorld(on)
+  const r = await startReflecting($, on)
+
+  w.listFails = true
+  await r.press()
+  expect(r.prompts[0]).toContain(`${PROJECTS}/-repo`)
+  expect(r.prompts[0]).toContain('Grep')
+  await r.complete(false)
+
+  w.listFails = false
+  await r.press()
+  expect(w.files.get(DIGEST) ?? '').toContain('ルートでの発言')
 })
