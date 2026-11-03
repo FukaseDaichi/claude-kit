@@ -88,7 +88,7 @@ AskUserQuestion を `multiSelect: true` で使う。
 ## Step 8: 適用と報告
 
 - チェックされた案だけを適用する。チェックされなかった案は何もしない
-- LEARNINGS.md から指示ファイル・スキル・README へ移した項目は LEARNINGS.md から削除し、転記先を明記する
+- LEARNINGS.md から指示ファイル・スキル・README へ移した項目は、LEARNINGS.md から行ごと削除する。「→ CLAUDE.md へ移した」のような転記先の行や印は残さない
 - 冒頭コメントの `最終統合: YYYY-MM-DD` を今日の日付に更新する（なければ記法ルールのコメントに1行足す）。learnings-loop はこの日付から「統合から N 日」を出す
 - 報告に入れるもの:
   - LEARNINGS.md の削除 / マージ / 昇格の件数
