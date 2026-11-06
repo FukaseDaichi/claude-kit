@@ -561,6 +561,27 @@ test('in a git repository without LEARNINGS.md the band offers init, and pressin
   expect(status.text).toContain('/repo/LEARNINGS.md')
 })
 
+// デスクトップアプリは最初の発言でセッションを始めるので、発言のあとも待機中は案内を出し続ける
+test('the init offer stays after the first prompt and hides only while working', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on, { files: new Map(), git: IN_REPO })
+  on('session.turns', () => ({ value: 1 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
+
+  await $.session.start(ON_MAIN)
+  await $.prompt.submit({ text: 'fix it', wait: false, origin: { kind: 'composer' } })
+
+  const working = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: { ...BAND, isWorking: true } })
+  expect(await working.find({ key: 'init' })).toBeUndefined()
+  await working.unmount()
+
+  const idle = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect(await idle.find({ key: 'init' })).toBeDefined()
+  await idle.unmount()
+})
+
 test('"do not ask in this repository" is remembered across sessions', async ($, on) => {
   mock.clock(on)
   mock.store(on)
@@ -663,6 +684,51 @@ test('reflect asks Claude to consolidate, shows a pending line while it works, t
   const after = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
   expect(await after.find({ key: 'reflect' })).toBeDefined()
   await after.unmount()
+})
+
+// 2.1.318 のエンジンは、プラグインが送ったプロンプトを「The <plugin> plugin sent a message:」で包んでターンを始める
+test('a reflect turn whose prompt the engine wrapped still ends the reflecting line', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const w = world(on)
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('audio.play', () => ({ value: undefined }))
+  const prompts: string[] = []
+  on('prompt.submit', (_, e) => {
+    prompts.push(e.text)
+    return { text: e.text }
+  })
+
+  await $.session.start(ON_MAIN)
+  const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  await ui.press({ key: 'reflect' })
+  await ui.unmount()
+
+  const wrapped = `The learnings-loop plugin sent a message:\n${prompts[0] ?? ''}\nThis is how Claude Code surfaces a prompt a plugin submits between turns.`
+  await $.turn.start({ text: wrapped, turnId: 't1' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  expect(w.toasts).toContain('✨ 学びを反映しました')
+  const after = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect(await after.find({ key: 'reflect' })).toBeDefined()
+  await after.unmount()
+})
+
+test('the band count follows edits to LEARNINGS.md during the turn', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const w = world(on)
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+
+  await $.session.start(ON_MAIN)
+  await $.turn.start({ text: 'reflect', turnId: 't1' })
+  w.files.set(FILE, INITIAL.replace('- 2026-10-02: 既存のA\n', '- 2026-10-02: 既存のA\n- 2026-10-03: B\n- 2026-10-04: C\n'))
+  await $.tool.call({ tool: 'Edit', file_path: FILE, old_string: 'x', new_string: 'y' })
+
+  const ui = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect((await ui.find({ type: 'Text', text: /観察/ }))?.text).toContain('観察 3件')
+  await ui.unmount()
 })
 
 const SUBMIT = { wait: false, origin: { kind: 'composer' as const } }

@@ -65,7 +65,6 @@ const sessionAtom = atom({ plugin: 'learnings-loop', key: 'session' } as const, 
   file: null,
   repoKey: null,
   initOfferFor: null,
-  hasPrompted: false,
 } as LearningsSession)
 const appendedAtom = atom({ plugin: 'learnings-loop', key: 'appended' } as const, { count: 0, fromPending: 0 } as LearningsAppended)
 const noticeAtom = atom({ plugin: 'learnings-loop', key: 'notice' } as const, {
@@ -132,6 +131,8 @@ let transcriptPath: string | undefined
 let pendingCursor: number | undefined
 /** 反映のプロンプトで始まったターンの id。そのターンが終わったときだけ「反映した」とみなす */
 let reflectTurnId: string | undefined
+/** このモジュールが反映のプロンプトを送ったか。帯の「反映しています…」が、リロードで送った側の状態を失ったまま残っていないかの判定に使う */
+let isReflectSubmitted = false
 
 const ZERO_USAGE: ModelUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
@@ -549,9 +550,11 @@ async function reflect($: EngineInterface): Promise<void> {
   try {
     pendingCursor = undefined
     reflectTurnId = undefined
+    isReflectSubmitted = true
     const history = await collectHistory($).catch((err): HistoryHandoff => ({ kind: 'none', reason: String(err) }))
     await $.prompt.submit({ text: buildConsolidatePrompt(history) })
   } catch (err) {
+    isReflectSubmitted = false
     await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
     throw err
   }
@@ -650,6 +653,7 @@ async function collectHistory($: EngineInterface): Promise<HistoryHandoff> {
 async function reflected($: EngineInterface, reason: TurnCompleteReason): Promise<void> {
   await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
   reflectTurnId = undefined
+  isReflectSubmitted = false
   const s = await read($, sessionAtom)
   const cursor = pendingCursor
   pendingCursor = undefined
@@ -700,7 +704,10 @@ export const register: Register = (on, rawOptions) => {
 
   on('session.start', async ($, e, next) => {
     turn = { edits: 0, errors: 0, editedLearnings: false }
-    criteriaText = (await readFile($, `${$.plugin.root}/criteria/CRITERIA.md`)) ?? ''
+    isReflectSubmitted = false
+    reflectTurnId = undefined
+    await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
+    criteriaText =(await readFile($, `${$.plugin.root}/criteria/CRITERIA.md`)) ?? ''
 
     await $.command.register({
       name: 'learnings',
@@ -726,7 +733,6 @@ export const register: Register = (on, rawOptions) => {
     if (e.reason === 'clear') {
       await update($, extractionAtom, x => ({ ...x, processedUpTo: 0, isPending: false }))
       await update($, appendedAtom, () => ({ count: 0, fromPending: 0 }))
-      await update($, sessionAtom, s => ({ ...s, hasPrompted: false }))
       turn = { edits: 0, errors: 0, editedLearnings: false }
       lastTurns = 0
       composeSeen = false
@@ -760,7 +766,8 @@ export const register: Register = (on, rawOptions) => {
     if (e.agentId === undefined) {
       turn = { edits: 0, errors: 0, editedLearnings: false }
       await noteCompaction($)
-      if (e.text.startsWith(REFLECT_PREFIX) && (await read($, noticeAtom)).isReflecting) reflectTurnId = e.turnId
+      // エンジンはプラグインが送ったプロンプトを「The learnings-loop plugin sent a message:」などで包むので、前方一致でなく含むかで見る
+      if (e.text.includes(REFLECT_PREFIX) && (await read($, noticeAtom)).isReflecting) reflectTurnId = e.turnId
     }
     return next(e)
   })
@@ -769,7 +776,6 @@ export const register: Register = (on, rawOptions) => {
   // 最初の発言と、会話圧縮のあとの最初の発言に1回ずつ。prompt.compose が一度でも届いていれば（システムプロンプトにある）渡さない。
   // 最初の発言の時点では compose が届くか分からないので、どちらの環境でも最初の1回は添付する（届く環境では1回だけ重なる）
   on('prompt.submit', async ($, e, next) => {
-    if (!e.isMeta) await update($, sessionAtom, s => (s.hasPrompted ? s : { ...s, hasPrompted: true }))
     if (e.isMeta || e.command !== undefined || !options.injectPrinciples || composeSeen) return next(e)
     const s = await read($, sessionAtom)
     if (s.file === null) return next(e)
@@ -798,7 +804,13 @@ export const register: Register = (on, rawOptions) => {
     else if (EDIT_TOOLS.has(tool) && ran.deny === undefined) {
       turn.edits++
       const path = (e as { file_path?: unknown }).file_path
-      if (typeof path === 'string' && isLearningsPath(path)) turn.editedLearnings = true
+      if (typeof path === 'string' && isLearningsPath(path)) {
+        turn.editedLearnings = true
+        // 反映などで Claude が書き換えたら、帯の件数をその場で読み直す
+        const s = await read($, sessionAtom)
+        const text = s.file !== null ? await readFile($, s.file) : undefined
+        if (text !== undefined) await refreshNotice($, text)
+      }
     }
     return ran
   })
@@ -806,6 +818,13 @@ export const register: Register = (on, rawOptions) => {
   on('turn.complete', async ($, e, next) => {
     // 反映のプロンプトで始まったターンだけ。先に終わったほかのターン（反映が待ち行列にいる間の発言など）では数えない
     if (e.agentId === undefined && reflectTurnId !== undefined && e.turnId === reflectTurnId) await reflected($, e.reason)
+    // 反映中の表示が残っているのに、このモジュールは反映を送っていない（送ったあとにリロードされた）なら、表示だけ戻す
+    else if (e.agentId === undefined && !isReflectSubmitted && (await read($, noticeAtom)).isReflecting) {
+      await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
+      const s = await read($, sessionAtom)
+      const text = s.file !== null ? await readFile($, s.file) : undefined
+      if (text !== undefined) await refreshNotice($, text)
+    }
     // Claude が自分で LEARNINGS.md を書いたターンは、そこまでを処理済みにして抽出しない（二重の追記を防ぐ）
     if (e.agentId === undefined && !e.isAborted && turn.editedLearnings) {
       const turns = await $.session.turns()
@@ -822,13 +841,14 @@ export const register: Register = (on, rawOptions) => {
     return next(e)
   })
 
-  // 帯: 件数と「追記内容を見る」「学びを反映」。LEARNINGS.md がなければ、最初のプロンプトまで init を案内する
+  // 帯: 件数と「追記内容を見る」「学びを反映」。LEARNINGS.md がなければ、作るか断るまで待機中は init を案内する
+  // （デスクトップアプリは最初の発言でセッションを始めるので、「最初のプロンプトまで」にすると一度も出ない）
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const s = await read($, sessionAtom)
     if (s.file === null) {
       const repoKey = s.initOfferFor
-      if (repoKey === null || s.hasPrompted || e.props.isWorking) return next(e)
+      if (repoKey === null || e.props.isWorking) return next(e)
       const { Box, Button } = $.ui.resolve(e)
       return stack(
         $,

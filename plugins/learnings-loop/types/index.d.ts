@@ -23,8 +23,6 @@ export type LearningsSession = {
   repoKey: string | null
   /** LEARNINGS.md のない Git リポジトリで init を案内するときの、そのリポジトリの識別キー。案内しないなら null */
   initOfferFor: string | null
-  /** 最初のプロンプトがもう送られたか（init の案内は送られる前だけ） */
-  hasPrompted: boolean
 }
 
 export type LearningsExtraction = {

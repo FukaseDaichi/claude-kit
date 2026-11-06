@@ -20,12 +20,14 @@
 
 - 2026-11-03: スキルに「移した項目は削除し、転記先を明記する」と書くと、転記先の行を残す指示とも読めるため、LEARNINGS.md に転記先の行が増えていく。移した項目は行ごと削除し、転記先の行や印を残さないと明確に書く
 - 2026-11-03: zsh では grep -rn の --include=* のようにクォートしない glob がシェル側で展開され、「no matches found」で失敗する。追跡中のファイルを探すときは git grep -n を使えば通る
+- 2026-11-06: push が non-fast-forward で断られたので rebase しようとしたが、learnings-loop が追記した LEARNINGS.md が未 commit のまま残っていて rebase が止まった。git rebase --autostash origin/main なら退避と戻しを自動でやって通る
 
 ## Domain Knowledge
 （業務・仕様・環境の知識）
 
 - 2026-10-30: macOS の zsh には timeout コマンドがない（command not found: timeout）。長いコマンドの時間制限は、timeout で包まずに Bash ツールの timeout 引数で指定する
 - 2026-10-30: Claude Code 2.1.309 の型では、claude-code/testing の test の第2引数が TestBody | TestOptions なので、Parameters<Parameters<typeof test>[1]>[0] で $ の型を取ると TS2344 になる（claude plugin test 自体は通る）
+- 2026-11-06: Claude デスクトップアプリ（Code タブ）は最初の発言を送った時点でセッションを始めるため、session.start の直後に prompt.submit が来て、その直後から isWorking になる。「最初のプロンプトまで」帯を出す条件では一度も表示されない
 
 ## Open Questions
 （未解決の疑問）

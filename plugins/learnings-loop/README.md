@@ -22,7 +22,7 @@ claude plugin install learnings-loop@claude-kit --scope user
 
 その後、`LEARNINGS.md` のない Git リポジトリでセッションを始めると、帯に `📚 このリポジトリに LEARNINGS.md がありません` と出ます。
 **📝 作って学びを記録する** を押すと作られ、そのセッションから記録が始まります。**このリポジトリでは聞かない** を押したリポジトリでは、次から出ません。
-帯は最初のプロンプトを送ると消えます。あとから作るときは `/learnings init` を打ちます。
+帯は Claude が作業している間は消え、どちらかを押すまで待機中に出続けます。`/learnings init` でも作れます。
 
 **条件**: Claude Code 2.1.287 以上。リポジトリに5見出し（`## Patterns That Work` / `## Mistakes to Avoid` /
 `## Domain Knowledge` / `## Open Questions` / `## Consolidated Principles`）の `LEARNINGS.md` があること。
