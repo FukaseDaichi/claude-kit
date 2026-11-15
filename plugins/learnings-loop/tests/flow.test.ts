@@ -71,6 +71,8 @@ type World = {
   mtimes: Map<string, number>
   /** $.fs.read が失敗するパス */
   unreadable: Set<string>
+  /** 今の作業フォルダ（$.session.cwd()）。ROOT の外なら Git リポジトリではない */
+  cwd: string
 }
 
 /**
@@ -96,6 +98,7 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     sizes: init.sizes ?? new Map(),
     mtimes: init.mtimes ?? new Map(),
     unreadable: new Set(),
+    cwd: ROOT,
   }
   on('fs.list', (_, e) => {
     if (w.listFails) throw new Error('EACCES')
@@ -118,8 +121,10 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     return { value: [...seen.values()] }
   })
   on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
-  on('session.repo', () => ({ value: { root: ROOT, remote: null, internal: false, name: null } }))
-  on('session.cwd', () => ({ value: ROOT }))
+  on('session.repo', () => ({
+    value: w.cwd === ROOT || w.cwd.startsWith(`${ROOT}/`) ? { root: ROOT, remote: null, internal: false, name: null } : null,
+  }))
+  on('session.cwd', () => ({ value: w.cwd }))
   on('session.id', () => ({ value: 'test-session' }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }))
   on('fs.exists', (_, e) => ({ value: w.files.has(norm(e.path)) }))
@@ -195,10 +200,42 @@ test('session.start registers /learnings and injects the principles', async ($, 
   expect(section?.scope).toBe('session')
   expect(section?.text).toContain('原則1')
   expect(section?.text).toContain('自分で LEARNINGS.md に追記しない')
+  // 原則だけでなく、生の観察も渡す（原則になる前の学びも効くように）
+  expect(section?.text).toContain('### Patterns That Work\n- 2026-10-02: 既存のA')
+  expect(section?.text).not.toContain('grep')
 
   const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   expect(status.text).toContain('生の観察 1 件')
   expect(w.forks.length).toBe(0)
+})
+
+test('observations that do not fit are left in the file, and Claude is told to grep it', { options: { observationChars: 50 } }, async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on, { files: new Map([[FILE, INITIAL.replace('- 2026-10-02: 既存のA', '- 2026-10-02: 既存のA\n- 2026-10-09: 既存のB')]]) })
+  on('session.turns', () => ({ value: 0 }))
+  await $.session.start(ON_MAIN)
+
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  const text = composed.sections.find(s => s.id === 'learnings-loop:principles')?.text ?? ''
+  expect(text).toContain('- 2026-10-09: 既存のB')
+  expect(text).not.toContain('既存のA')
+  expect(text).toContain('ここにない 1 件は `/repo/LEARNINGS.md` にある')
+  expect(text).toContain('grep')
+})
+
+test('with the observation limit at 0, only the principles are injected', { options: { observationChars: 0 } }, async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  world(on)
+  on('session.turns', () => ({ value: 0 }))
+  await $.session.start(ON_MAIN)
+
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  const text = composed.sections.find(s => s.id === 'learnings-loop:principles')?.text ?? ''
+  expect(text).toContain('原則1')
+  expect(text).not.toContain('既存のA')
+  expect(text).toContain('生の観察 1 件が `/repo/LEARNINGS.md` にある')
 })
 
 test('an edit turn triggers a fork, a judge and one appended line', async ($, on) => {
@@ -306,7 +343,7 @@ test("after an append the band row shows a view button, and another mod's band r
       plugin: 'learnings-loop',
       component: 'AbovePrompt',
       surface,
-      props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+      props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
     })
     expect(await ui.find({ key: 'view' })).toBeDefined()
     expect(await ui.find({ key: 'undo' })).toBeUndefined()
@@ -320,7 +357,7 @@ test("after an append the band row shows a view button, and another mod's band r
     plugin: 'learnings-loop',
     component: 'AbovePrompt',
     surface: 'desktop',
-    props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} },
   })
   await ui.press({ key: 'view' })
   const shown = w.logs.find(l => l.includes('/repo/LEARNINGS.md'))
@@ -532,7 +569,7 @@ test('without a LEARNINGS.md the mod stays quiet and /learnings points at init',
   expect(w.forks.length).toBe(0)
 })
 
-const BAND = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} }
+const BAND = { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 9 }, view: {} }
 const IN_REPO = { 'rev-parse --path-format=absolute --git-common-dir': '/repo/.git' }
 
 test('in a git repository without LEARNINGS.md the band offers init, and pressing it creates the file', async ($, on) => {
@@ -788,6 +825,137 @@ test('once prompt.compose has reached the mod, nothing is attached to the prompt
 
   const status = await $.command.run({ command: 'learnings', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   expect(status.text).toContain('原則: システムプロンプトに注入')
+})
+
+// デスクトップアプリは予備のフォルダでプロセスを始めておき、最初の発言で作業フォルダへ移す。
+// session.start の時点の cwd は予備のフォルダなので、そこで見つからなくても、移ったあとで探し直す
+const SPARE = '/spare/s1'
+
+test('a session started in a spare folder finds LEARNINGS.md once it has moved to the repository', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  const w = world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main' } })
+  w.cwd = SPARE
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+  const contexts: (readonly string[] | undefined)[] = []
+  on('prompt.submit', (_, e) => {
+    contexts.push(e.context)
+    return { text: e.text, context: e.context }
+  })
+  await $.session.start({ ...ON_MAIN, cwd: SPARE })
+
+  // 最初の発言の時点では作業フォルダへ移っている: 原則が添付される
+  w.cwd = ROOT
+  await $.prompt.submit({ text: 'fix it', ...SUBMIT })
+  expect(contexts[0]?.[0]).toContain('原則1')
+
+  // 抽出と追記も動く
+  turns = 1
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(2000)
+  expect(w.forks.length).toBe(1)
+  expect(w.files.get(FILE) ?? '').toContain('- 2026-10-22: zsh では PIPESTATUS でなく pipestatus を使う')
+})
+
+test('a move that the first prompt did not see is picked up when the turn starts', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  const w = world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main' } })
+  w.cwd = SPARE
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+  const contexts: (readonly string[] | undefined)[] = []
+  on('prompt.submit', (_, e) => {
+    contexts.push(e.context)
+    return { text: e.text, context: e.context }
+  })
+  await $.session.start({ ...ON_MAIN, cwd: SPARE })
+
+  // 発言の時点ではまだ予備のフォルダ: 添付できない
+  await $.prompt.submit({ text: 'fix it', ...SUBMIT })
+  expect(contexts[0]).toBeUndefined()
+
+  // ターンの開始までに移った: このターンの編集から抽出する
+  w.cwd = ROOT
+  turns = 1
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.ts`, old_string: 'a', new_string: 'b' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(2000)
+  expect(w.forks.length).toBe(1)
+
+  // 原則は次の発言で添付する
+  await $.prompt.submit({ text: 'more', ...SUBMIT })
+  expect(contexts[1]?.[0]).toContain('原則1')
+})
+
+test('after the move, /learnings and the init offer follow the repository', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const w = world(on, { files: new Map([[TEMPLATE, INITIAL]]), git: IN_REPO })
+  w.cwd = SPARE
+  on('session.turns', () => ({ value: 0 }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
+  await $.session.start({ ...ON_MAIN, cwd: SPARE })
+
+  // 予備のフォルダは Git リポジトリではないので、案内は出ない
+  const before = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect(await before.find({ key: 'init' })).toBeUndefined()
+  await before.unmount()
+
+  w.cwd = ROOT
+  await $.prompt.submit({ text: 'fix it', ...SUBMIT })
+  const after = await $.ui.mount({ plugin: 'learnings-loop', component: 'AbovePrompt', surface: 'desktop', props: BAND })
+  expect(await after.find({ key: 'init' })).toBeDefined()
+  await after.unmount()
+
+  // /learnings init は移った先のリポジトリに作る
+  const made = await $.command.run({ command: 'learnings', args: 'init', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(made.text).toContain('/repo/LEARNINGS.md')
+  expect(w.files.get(FILE)).toBe(INITIAL)
+})
+
+test('moving to a folder without LEARNINGS.md keeps the file in use', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 22, 3, 0, 0) })
+  mock.store(on)
+  const w = world(on, { git: { 'rev-parse --abbrev-ref HEAD': 'main' } })
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+  await $.session.start(ON_MAIN)
+
+  // Claude が cd でリポジトリの外へ出ても、記録は続ける
+  w.cwd = '/tmp/work'
+  turns = 1
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await $.tool.call({ tool: 'Edit', file_path: '/tmp/work/a.ts', old_string: 'a', new_string: 'b' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(2000)
+  expect(w.forks.length).toBe(1)
+  expect(w.files.get(FILE) ?? '').toContain('pipestatus')
+})
+
+test('moving inside the same repository does not change the principles fixed at session start', async ($, on) => {
+  mock.clock(on)
+  mock.store(on)
+  const w = world(on)
+  let turns = 0
+  on('session.turns', () => ({ value: turns }))
+  await $.session.start(ON_MAIN)
+
+  // セッションの途中で原則が増え、Claude がサブフォルダへ移った
+  w.files.set(FILE, `${INITIAL}- 原則2\n`)
+  w.cwd = `${ROOT}/sub`
+  turns = 1
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  const section = composed.sections.find(s => s.id === 'learnings-loop:principles')
+  expect(section?.text).toContain('原則1')
+  expect(section?.text).not.toContain('原則2')
 })
 
 test('with the injection off, neither route carries the principles', { options: { injectPrinciples: false } }, async ($, on) => {

@@ -128,6 +128,46 @@ export function observations(text: string): Observation[] {
   return out
 }
 
+export type ObservationDigest = { text: string; shown: number }
+
+/**
+ * 原則と一緒に Claude に渡す、生の観察の抜粋。原則になる前の学びも、次のセッションから効くようにする。
+ * 未解決の疑問は入れない。maxChars に収まるだけ、再観測の多い順・新しい順に選び、セクションごとにまとめる。
+ */
+export function observationDigest(text: string, maxChars: number): ObservationDigest {
+  const ranked = observations(text)
+    .filter(o => o.section !== 'Open Questions')
+    .map((o, index) => {
+      const mark = reobserved(o.line)
+      return { o, index, count: mark?.count ?? 0, date: mark?.last ?? /^- (\d{4}-\d{2}-\d{2})/.exec(o.line)?.[1] ?? '' }
+    })
+    // 同じ日付なら、あとから足した行（ファイルの下の行）を先に
+    .sort((a, b) => b.count - a.count || (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) || b.index - a.index)
+
+  const picked = new Set<number>()
+  const headed = new Set<Section>()
+  // 行ごとに「本文 + 改行」で数える。最後の行には改行がないので、比べるときに1引く
+  let used = 0
+  for (const r of ranked) {
+    const heading = headed.has(r.o.section) ? 0 : `### ${r.o.section}`.length + 1
+    const cost = heading + r.o.line.length + 1
+    if (used + cost - 1 > maxChars) continue
+    used += cost
+    picked.add(r.index)
+    headed.add(r.o.section)
+  }
+
+  // 載せるときはファイルと同じ並び（セクション順、その中は上から）
+  const inFileOrder = ranked.filter(r => picked.has(r.index)).sort((a, b) => a.index - b.index)
+  const lines: string[] = []
+  for (const section of SECTIONS) {
+    if (!headed.has(section)) continue
+    lines.push(`### ${section}`)
+    for (const r of inFileOrder) if (r.o.section === section) lines.push(r.o.line)
+  }
+  return { text: lines.join('\n'), shown: picked.size }
+}
+
 export type AppendResult =
   | { ok: true; text: string; lineIndex: number }
   | { ok: false; reason: 'missing-headings' | 'conflict-markers' | 'unknown-section' }

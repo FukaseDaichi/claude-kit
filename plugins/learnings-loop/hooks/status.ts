@@ -15,6 +15,8 @@ export type StatusData = {
   thresholds: { count: number; days: number }
   /** 原則が Claude に届いている経路。system: システムプロンプト、prompt: 発言の添付、none: まだ、off: 設定で切っている */
   principlesVia: 'system' | 'prompt' | 'none' | 'off'
+  /** 原則と一緒に Claude に渡している生の観察の件数（セッション開始時点） */
+  observationsShown?: number
 }
 
 const VIA_JA: Record<StatusData['principlesVia'], string> = {
@@ -51,7 +53,8 @@ export function formatStatus(d: StatusData): string {
 
   const u = d.extraction.usage
   const state = d.extraction.isRunning ? '抽出中' : d.extraction.isPending ? '抽出待ち' : '待機'
-  lines.push(VIA_JA[d.principlesVia])
+  const shown = d.principlesVia !== 'off' && (d.observationsShown ?? 0) > 0 ? ` ・ 生の観察 ${d.observationsShown} 件も渡す` : ''
+  lines.push(`${VIA_JA[d.principlesVia]}${shown}`)
   lines.push(`今セッションの抽出: ${d.extraction.runs} 回（${state}）・ 新規 ${u.input} / 出力 ${u.output} / キャッシュ読込 ${u.cacheRead} / 書込 ${u.cacheWrite} tok`)
   const five = d.rateLimits.find(r => r.kind === 'five_hour')
   const week = d.rateLimits.find(r => r.kind === 'seven_day')

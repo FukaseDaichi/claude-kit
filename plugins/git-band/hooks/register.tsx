@@ -26,7 +26,9 @@ const REFRESH_MS = 30_000
 const PULL_TIMEOUT_MS = 120_000
 const PUSHED_SHOWN_MS = 4_000
 
-// セッションの作業フォルダ。session.start で入る（再読み込みでも session.start は走り直す）
+// セッションの作業フォルダ。session.start で入り、状態を読むたびに今のフォルダへ合わせる。
+// デスクトップアプリは予備のフォルダでプロセスを始めておき、最初の発言で作業フォルダへ移す。
+// session.start はプロセスにつき1回なので、そのときのフォルダだけを見ていると帯が一度も出ない
 let cwd: string | null = null
 let ticker: { cancel: () => void } | null = null
 // コミットして push の依頼で始まったターン。このターンが終わったら「依頼中」を戻す
@@ -43,6 +45,8 @@ async function git($: EngineInterface, args: readonly string[], timeoutMs = 10_0
 }
 
 async function refresh($: EngineInterface): Promise<void> {
+  // Claude の cd では動かず、ホストがフォルダを移したときだけ変わる
+  cwd = await $.session.root().catch(() => cwd)
   const st = await git($, ['status', '--porcelain=v2', '--branch'])
   if (st.exitCode !== 0) {
     await update($, statusAtom, () => null)
@@ -140,7 +144,11 @@ export const register: Register = on => {
   })
 
   on('turn.start', ($, e, next) => {
-    if (e.agentId === undefined && isShipPrompt(e.text)) shipTurnId = e.turnId
+    if (e.agentId === undefined) {
+      if (isShipPrompt(e.text)) shipTurnId = e.turnId
+      // 最初の発言で作業フォルダへ移った直後。次のタイマーを待たずに帯を出す
+      void refresh($).catch(err => logError($, 'refresh', err))
+    }
     return next(e)
   })
 

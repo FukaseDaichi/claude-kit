@@ -28,6 +28,7 @@ import {
   isSection,
   lastConsolidated,
   localDate,
+  observationDigest,
   parse,
   principles,
   removeLine,
@@ -87,6 +88,7 @@ type Options = {
   noticeCount: number
   noticeDays: number
   injectPrinciples: boolean
+  observationChars: number
   offerInit: boolean
   maxChars: number
   judgeModel: string
@@ -103,6 +105,7 @@ function readOptions(o: PluginOptions): Options {
     noticeCount: num(o.noticeCount, 80),
     noticeDays: num(o.noticeDays, 7),
     injectPrinciples: bool(o.injectPrinciples, true),
+    observationChars: num(o.observationChars, 3000),
     offerInit: bool(o.offerInit, true),
     maxChars: num(o.maxChars, 200),
     judgeModel: str(o.judgeModel, 'haiku'),
@@ -115,6 +118,9 @@ let options: Options = readOptions({})
 /** セッション開始時点で固定する原則の本文（プロンプトキャッシュを壊さないため） */
 let principlesText = ''
 let observationsAtStart = 0
+/** 原則と一緒に渡す生の観察の抜粋（同じくセッション開始時点で固定）と、その件数 */
+let observationsText = ''
+let observationsShown = 0
 let criteriaText = ''
 /** ターンごとの観察 */
 let turn = { edits: 0, errors: 0, editedLearnings: false }
@@ -133,6 +139,10 @@ let pendingCursor: number | undefined
 let reflectTurnId: string | undefined
 /** このモジュールが反映のプロンプトを送ったか。帯の「反映しています…」が、リロードで送った側の状態を失ったまま残っていないかの判定に使う */
 let isReflectSubmitted = false
+/** LEARNINGS.md を最後に探したときの作業フォルダ。変わっていたら探し直す */
+let detectedCwd: string | undefined
+/** 探し直しの途中なら、その完了。同時に来たフックが古い状態を読まないように待つ */
+let detecting: Promise<void> | undefined
 
 const ZERO_USAGE: ModelUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
@@ -158,14 +168,26 @@ async function noteCompaction($: EngineInterface): Promise<void> {
 
 /** システムプロンプトにも発言の添付にも同じ文で渡す原則の本文（セッション開始時点の内容で固定） */
 function principlesBlock(file: string): string {
-  return [
+  const lines = [
     '# Project learnings (learnings-loop)',
     principlesText !== '' ? `## Consolidated Principles\n${principlesText}` : '（まだ原則はありません）',
     '',
-    `生の観察 ${observationsAtStart} 件が \`${file}\` にある。関係しそうな作業の前に grep して参照せよ。`,
+  ]
+  // 原則になる前の学びも渡す。原則だけだと、同じことが2回起きて反映されるまで何も効かない
+  if (observationsText !== '') {
+    lines.push('## 生の観察', '原則にまとめる前の学び。当てはまる作業では、同じ失敗を繰り返さないように使う。', observationsText, '')
+  }
+  const rest = observationsAtStart - observationsShown
+  if (observationsShown === 0 && rest > 0) {
+    lines.push(`生の観察 ${rest} 件が \`${file}\` にある。関係しそうな作業の前に grep して参照せよ。`)
+  } else if (rest > 0) {
+    lines.push(`ここにない ${rest} 件は \`${file}\` にある。関係しそうな作業の前に grep して参照せよ。`)
+  }
+  lines.push(
     '学びの記録は learnings-loop が自動で行う。明示的に頼まれない限り、自分で LEARNINGS.md に追記しない。',
     'LEARNINGS.md の未 commit の変更は learnings-loop の追記。作業の commit に含めてよい（戻したり除いたりしない）。',
-  ].join('\n')
+  )
+  return lines.join('\n')
 }
 
 /** 原則がどの経路で Claude に届いているか（/learnings の表示用） */
@@ -235,9 +257,16 @@ async function initOfferKey($: EngineInterface): Promise<string | null> {
   return key
 }
 
-async function detect($: EngineInterface, cwd: string): Promise<void> {
+/**
+ * LEARNINGS.md を探して、セッションの状態に入れる。
+ * isMove（作業フォルダが変わったあとの探し直し）では、見つからなくても使っているファイルを手放さない。
+ * 同じファイルなら原則の本文も読み直さない（セッション開始時点で固定。プロンプトキャッシュを壊さないため）。
+ */
+async function detect($: EngineInterface, cwd: string, isMove = false): Promise<void> {
+  const prev = isMove ? (await read($, sessionAtom)).file : null
   const file = await findLearnings($, cwd)
   if (file === null) {
+    if (prev !== null) return
     const initOfferFor = await initOfferKey($)
     await update($, sessionAtom, s => ({ ...s, file: null, repoKey: null, initOfferFor }))
     return
@@ -246,14 +275,51 @@ async function detect($: EngineInterface, cwd: string): Promise<void> {
   const parsed = text !== undefined ? parse(text) : undefined
   if (text === undefined || parsed === undefined || !parsed.ok) {
     $.ui.log(`${file}: ${parsed?.ok === false ? parsed.reason : 'unreadable'}; doing nothing`, { to: 'debug' })
+    if (prev !== null) return
     await update($, sessionAtom, s => ({ ...s, file: null, repoKey: null, initOfferFor: null }))
     return
   }
   const key = (await commonDir((argv, init) => $.process.run(argv, init), dirOf(file))) ?? file
   await update($, sessionAtom, s => ({ ...s, file, repoKey: key, initOfferFor: null }))
-  principlesText = principles(text)
-  observationsAtStart = countObservations(text)
+  if (file !== prev) {
+    principlesText = principles(text)
+    observationsAtStart = countObservations(text)
+    const digest = observationDigest(text, options.observationChars)
+    observationsText = digest.text
+    observationsShown = digest.shown
+    // 別のファイルに替わったら、発言への添付もやり直す
+    promptInjected = false
+  }
   await refreshNotice($, text)
+}
+
+/**
+ * 作業フォルダが変わっていたら LEARNINGS.md を探し直す。
+ * デスクトップアプリは予備のフォルダでプロセスを始めておき、最初の発言で作業フォルダへ移す。
+ * session.start はプロセスにつき1回で、そのときの cwd は予備のフォルダなので、そこで探すだけでは見つからない。
+ */
+async function ensureDetected($: EngineInterface): Promise<void> {
+  const cwd = await $.session.cwd().catch(() => undefined)
+  if (cwd !== undefined && cwd !== detectedCwd) {
+    detectedCwd = cwd
+    detecting = moved($, cwd).finally(() => {
+      detecting = undefined
+    })
+  }
+  if (detecting !== undefined) await detecting
+}
+
+async function moved($: EngineInterface, cwd: string): Promise<void> {
+  try {
+    const before = (await read($, sessionAtom)).file
+    await detect($, cwd, true)
+    const after = (await read($, sessionAtom)).file
+    $.ui.log(`cwd moved to ${cwd}; LEARNINGS.md: ${after ?? 'none'}`, { to: 'debug' })
+    // 初めて見つかったなら、セッション開始時にやるはずだった保留の消化をここでやる
+    if (before === null && after !== null) await consumePending($)
+  } catch (err) {
+    $.ui.log(`redetect: ${String(err)}`, { to: 'debug' })
+  }
 }
 
 // ---- 書き込みの共通部分 -------------------------------------------------------
@@ -488,11 +554,13 @@ async function statusText($: EngineInterface): Promise<string> {
     discarded: s.repoKey !== null ? await getDiscarded($, s.repoKey) : [],
     thresholds: { count: options.noticeCount, days: options.noticeDays },
     principlesVia: principlesVia(),
+    observationsShown,
   })
 }
 
 async function runCommand($: EngineInterface, args: string): Promise<string> {
   const [verb = '', arg = ''] = args.trim().split(/\s+/)
+  await ensureDetected($)
   const s = await read($, sessionAtom)
 
   if (verb === 'init') return initFile($, await $.session.cwd(), arg === '--fix')
@@ -715,6 +783,7 @@ export const register: Register = (on, rawOptions) => {
       argumentHint: '[now|undo [n]|adopt <n>|commit|init]',
     })
 
+    detectedCwd = e.cwd
     await detect($, e.cwd)
 
     // 作業ブランチで保留していた分を、最新のファイルに対して再判定して書く
@@ -765,6 +834,7 @@ export const register: Register = (on, rawOptions) => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
       turn = { edits: 0, errors: 0, editedLearnings: false }
+      await ensureDetected($)
       await noteCompaction($)
       // エンジンはプラグインが送ったプロンプトを「The learnings-loop plugin sent a message:」などで包むので、前方一致でなく含むかで見る
       if (e.text.includes(REFLECT_PREFIX) && (await read($, noticeAtom)).isReflecting) reflectTurnId = e.turnId
@@ -776,7 +846,10 @@ export const register: Register = (on, rawOptions) => {
   // 最初の発言と、会話圧縮のあとの最初の発言に1回ずつ。prompt.compose が一度でも届いていれば（システムプロンプトにある）渡さない。
   // 最初の発言の時点では compose が届くか分からないので、どちらの環境でも最初の1回は添付する（届く環境では1回だけ重なる）
   on('prompt.submit', async ($, e, next) => {
-    if (e.isMeta || e.command !== undefined || !options.injectPrinciples || composeSeen) return next(e)
+    if (e.isMeta) return next(e)
+    // 予備のフォルダで始まったセッションは、最初の発言までに作業フォルダへ移っている
+    await ensureDetected($)
+    if (e.command !== undefined || !options.injectPrinciples || composeSeen) return next(e)
     const s = await read($, sessionAtom)
     if (s.file === null) return next(e)
     if (promptInjected) {
@@ -816,6 +889,8 @@ export const register: Register = (on, rawOptions) => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    // ターンの途中で作業フォルダへ移った場合も、このターンから抽出の対象にする
+    if (e.agentId === undefined) await ensureDetected($)
     // 反映のプロンプトで始まったターンだけ。先に終わったほかのターン（反映が待ち行列にいる間の発言など）では数えない
     if (e.agentId === undefined && reflectTurnId !== undefined && e.turnId === reflectTurnId) await reflected($, e.reason)
     // 反映中の表示が残っているのに、このモジュールは反映を送っていない（送ったあとにリロードされた）なら、表示だけ戻す

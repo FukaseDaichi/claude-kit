@@ -43,8 +43,14 @@
     "injectPrinciples": {
       "type": "boolean",
       "title": "原則の注入",
-      "description": "Consolidated Principles をシステムプロンプトに足す（セッション開始時点で固定）。届かない環境では、最初の発言と圧縮後の最初の発言に添付で渡す。",
+      "description": "Consolidated Principles と生の観察の抜粋をシステムプロンプトに足す（セッション開始時点で固定）。届かない環境では、最初の発言と圧縮後の最初の発言に添付で渡す。",
       "default": true
+    },
+    "observationChars": {
+      "type": "number",
+      "title": "注入する生の観察の文字数",
+      "description": "原則と一緒に渡す生の観察の上限（文字数）。再観測の多い順・新しい順に、収まるだけ載せる。0 なら原則だけを渡す。",
+      "default": 3000
     },
     "offerInit": {
       "type": "boolean",

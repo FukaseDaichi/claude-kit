@@ -8,8 +8,10 @@ const ROOT = '/repo'
 type Reply = { exitCode: number; stdout?: string; stderr?: string }
 
 type World = {
-  /** `git <args>` → 返事。関数なら呼ばれるたびに評価する */
-  git: Record<string, Reply | (() => Reply)>
+  /** `git <args>` → 返事。関数なら呼ばれるたびに、git を走らせたフォルダを渡して評価する */
+  git: Record<string, Reply | ((cwd: string | undefined) => Reply)>
+  /** セッションの作業フォルダ（$.session.root()）。デスクトップアプリでは最初の発言で変わる */
+  root: string
   calls: string[]
   prompts: string[]
   toasts: string[]
@@ -33,12 +35,13 @@ const WORKTREES = 'worktree /repo\nHEAD 1\nbranch refs/heads/main\n'
 
 /** `below` を渡すと、帯の下にほかの Mod がその文字を描いている状態にする */
 function world(on: On, git: World['git'], below?: string): World {
-  const w: World = { git, calls: [], prompts: [], toasts: [], sounds: [] }
+  const w: World = { git, root: ROOT, calls: [], prompts: [], toasts: [], sounds: [] }
+  on('session.root', () => ({ value: w.root }))
   on('process.run', (_, e) => {
     const key = e.argv.slice(1).join(' ')
     w.calls.push(key)
     const found = w.git[key]
-    const r = typeof found === 'function' ? found() : found ?? { exitCode: 128, stderr: `fatal: unexpected ${key}` }
+    const r = typeof found === 'function' ? found(e.init?.cwd) : found ?? { exitCode: 128, stderr: `fatal: unexpected ${key}` }
     return {
       value: { exitCode: r.exitCode, stdout: r.stdout ?? '', stderr: r.stderr ?? '', isStdoutTruncated: false, isStderrTruncated: false },
     }
@@ -72,6 +75,7 @@ const BAND = {
   component: 'AbovePrompt',
   props: {
     hasSurvey: false,
+    isCollapsed: false,
     isWorking: false,
     maxRows: 10,
     bodyColumns: 100,
@@ -107,6 +111,47 @@ test('outside a git repository the band is left to the engine', async ($, on) =>
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect((await ui.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
   expect(await ui.find({ key: 'pull' })).toBeUndefined()
+  await ui.unmount()
+})
+
+// デスクトップアプリは予備のフォルダでプロセスを始めておき、最初の発言で作業フォルダへ移す。
+// session.start の時点のフォルダは Git リポジトリではないので、移ったあとのフォルダで見直す
+const SPARE = '/spare/s1'
+const ONLY_IN_REPO = {
+  'status --porcelain=v2 --branch': (cwd: string | undefined) =>
+    cwd === ROOT ? { exitCode: 0, stdout: DIRTY } : { exitCode: 128, stderr: 'fatal: not a git repository' },
+  'worktree list --porcelain': { exitCode: 0, stdout: WORKTREES },
+}
+
+test('a session started in a spare folder shows the band once it has moved to the repository', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, ONLY_IN_REPO)
+  w.root = SPARE
+  await $.session.start({ ...START, cwd: SPARE })
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await ui.find({ key: 'ship' })).toBeUndefined()
+
+  // 最初の発言で作業フォルダへ移り、ターンが始まる
+  w.root = ROOT
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await clock.advance(0)
+  expect((await ui.find({ type: 'Text', text: /未コミット/ }))?.text).toBe('· 未コミット 2 · 未push 1')
+  expect(await ui.find({ key: 'ship' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('after the move, the ship request names the repository, not the spare folder', async ($, on) => {
+  const clock = mock.clock(on)
+  const w = world(on, ONLY_IN_REPO)
+  w.root = SPARE
+  await $.session.start({ ...START, cwd: SPARE })
+  w.root = ROOT
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await clock.advance(0)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ui.press({ key: 'ship' })
+  expect(w.prompts[0]).toContain('/repo（ブランチ main）')
   await ui.unmount()
 })
 

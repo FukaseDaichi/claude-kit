@@ -9,6 +9,7 @@ import {
   isLearningsPath,
   lastConsolidated,
   parse,
+  observationDigest,
   observations,
   principles,
   removeLine,
@@ -186,6 +187,47 @@ describe('reobservation', () => {
     expect(r.text).toContain('- 2026-10-01: 既存のA（再観測 1回・最終 2026-10-20）')
     expect(r.text.split('\n').length).toBe(SAMPLE.split('\n').length)
     expect(replaceLine(SAMPLE, 'Mistakes to Avoid', '- 2026-10-01: 既存のA', 'x').ok).toBe(false)
+  })
+})
+
+describe('observationDigest', () => {
+  test('lists every raw observation by section when they fit, leaving out open questions', async () => {
+    const d = observationDigest(SAMPLE, 3000)
+    expect(d.shown).toBe(4)
+    expect(d.text).toBe(
+      [
+        '### Patterns That Work',
+        '- 2026-10-01: 既存のA',
+        '- 2026-10-02: 既存のB',
+        '### Mistakes to Avoid',
+        '- 2026-10-03: 既存のC',
+        '- 2026-10-04: 既存のD',
+      ].join('\n'),
+    )
+    expect(d.text).not.toContain('疑問E')
+    expect(d.text).not.toContain('原則')
+  })
+
+  test('over the limit it keeps the most re-observed, then the newest', async () => {
+    const marked = SAMPLE.replace('- 2026-10-01: 既存のA', '- 2026-10-01: 既存のA（再観測 2回・最終 2026-10-20）')
+    // 見出し1行と項目1行がやっと入る長さ
+    const one = observationDigest(marked, 70)
+    expect(one.shown).toBe(1)
+    expect(one.text).toBe(['### Patterns That Work', '- 2026-10-01: 既存のA（再観測 2回・最終 2026-10-20）'].join('\n'))
+
+    // 印がなければ新しいものから
+    const newest = observationDigest(SAMPLE, 50)
+    expect(newest.shown).toBe(1)
+    expect(newest.text).toBe(['### Mistakes to Avoid', '- 2026-10-04: 既存のD'].join('\n'))
+  })
+
+  test('the text never exceeds the limit, and a limit of 0 lists nothing', async () => {
+    for (const max of [0, 10, 50, 80, 120, 3000]) {
+      const d = observationDigest(SAMPLE, max)
+      expect(d.text.length <= max).toBe(true)
+    }
+    expect(observationDigest(SAMPLE, 0)).toEqual({ text: '', shown: 0 })
+    expect(observationDigest('not a learnings file', 3000)).toEqual({ text: '', shown: 0 })
   })
 })
 
