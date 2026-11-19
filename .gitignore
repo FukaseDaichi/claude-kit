@@ -1,6 +1,8 @@
 # エンジンが Mod の読み込み時に生成する型定義
 .claude-plugin/types/
 plugins/*/.claude-plugin/types/
+# 上の型定義を読むためのエディタ用の設定（同じく手元で作られる）
+plugins/*/tsconfig.json
 node_modules/
 .DS_Store
 # API キーなどの秘密情報
