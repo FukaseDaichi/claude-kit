@@ -41,6 +41,47 @@ export async function commitOnly(run: Run, cwd: string, path: string, message: s
   return (await git(run, cwd, ['commit', '-m', message, '--', path])) !== undefined
 }
 
+/** 固定文字列の grep の引数。リポジトリ全体（cwd に関係なくトップから）を探し、LEARNINGS.md 自身は除く */
+export function grepArgs(keywords: readonly string[]): string[] {
+  return [
+    'grep', '-F', '-I', '-o', '-z', '--full-name', '--no-color',
+    ...keywords.flatMap(k => ['-e', k]),
+    '--', ':(top)', ':(top,exclude,glob)**/LEARNINGS.md',
+  ]
+}
+
+/**
+ * 語ごとに、それを含む追跡中のファイル（トップからのパス）を返す。どこにもない語は入らない。
+ * 1つも当たらなければ空の Map。grep が失敗したら undefined（「どこにもない」と区別する）
+ */
+export async function grepFixed(run: Run, cwd: string, keywords: readonly string[]): Promise<Map<string, string[]> | undefined> {
+  if (keywords.length === 0) return new Map()
+  try {
+    const r = await run(['git', ...grepArgs(keywords)], { cwd, timeoutMs: 20_000 })
+    // 1 は「当たりなし」。それ以外の 0 でない終了は失敗
+    if (r.exitCode === 1 && r.stdout === '' && r.stderr.trim() === '') return new Map()
+    if (r.exitCode !== 0) return undefined
+    return parseGrepHits(r.stdout)
+  } catch {
+    return undefined
+  }
+}
+
+/** `git grep -o -z` の出力（行ごとに `パス\0当たった語`）を、語 → パスの一覧にする */
+export function parseGrepHits(stdout: string): Map<string, string[]> {
+  const hits = new Map<string, string[]>()
+  for (const line of stdout.split('\n')) {
+    const at = line.indexOf('\0')
+    if (at <= 0) continue
+    const path = line.slice(0, at)
+    const word = line.slice(at + 1)
+    const list = hits.get(word) ?? []
+    if (!list.includes(path)) list.push(path)
+    hits.set(word, list)
+  }
+  return hits
+}
+
 /** `git worktree list --porcelain` の worktree の絶対パス。失敗は [] */
 export async function worktreeRoots(run: Run, cwd: string): Promise<string[]> {
   const out = await git(run, cwd, ['worktree', 'list', '--porcelain'])

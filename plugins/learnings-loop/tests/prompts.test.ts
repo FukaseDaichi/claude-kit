@@ -34,6 +34,32 @@ describe('buildConsolidatePrompt', () => {
     expect(p).toContain('EACCES')
   })
 
+  test('passes the target, the stale days, the counts and the inventory file', async () => {
+    const p = buildConsolidatePrompt(
+      { kind: 'none', reason: '前回以降の発言なし' },
+      { path: '/repo/.git/learnings-loop/inventory.md', observations: 95, target: 40, baseline: 21, staleDays: 30, stale: 12, referenced: 39 },
+    )
+    expect(p).toContain('目標 40 件')
+    expect(p).toContain('30 日超')
+    expect(p).toContain('今は 95 件（前回の統合の直後 21 件から +74 件）')
+    expect(p).toContain('棚卸しの材料: /repo/.git/learnings-loop/inventory.md（古い観察 12 件・反映済みかもしれない観察 39 件）')
+  })
+
+  test('without a recorded count, an inventory file or a grep, it says so instead of guessing', async () => {
+    const p = buildConsolidatePrompt(
+      { kind: 'none', reason: 'x' },
+      { path: undefined, observations: 5, target: 40, baseline: undefined, staleDays: 30, stale: 0, referenced: undefined },
+    )
+    expect(p).toContain('前回の統合の直後の件数は記録なし')
+    expect(p).not.toContain('棚卸しの材料')
+    const q = buildConsolidatePrompt(
+      { kind: 'none', reason: 'x' },
+      { path: '/i.md', observations: 5, target: 40, baseline: 5, staleDays: 30, stale: 0, referenced: undefined },
+    )
+    expect(q).toContain('+0 件')
+    expect(q).toContain('grep できなかった')
+  })
+
   test('with none it says the history is not used, and why', async () => {
     const p = buildConsolidatePrompt({ kind: 'none', reason: '前回以降の発言なし' })
     expect(p).toContain('会話履歴は使わない')

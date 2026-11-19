@@ -120,11 +120,31 @@ export type HistoryHandoff =
 /** 反映のプロンプトの書き出し。抜粋から除くのと、反映のターンを見分けるのに使う */
 export const REFLECT_PREFIX = 'learnings-loop:consolidate-learnings スキルを実行して'
 
+/** 「学びを反映」で渡す、棚卸しの数と設定。path は棚卸しの材料のファイル（作れなかったら undefined） */
+export type InventoryHandoff = {
+  path: string | undefined
+  observations: number
+  target: number
+  baseline: number | undefined
+  staleDays: number
+  stale: number
+  /** キーワードが LEARNINGS.md の外に出てくる観察の数。grep できなかったら undefined */
+  referenced: number | undefined
+}
+
 /** 「学びを反映」で送るプロンプト。 */
-export function buildConsolidatePrompt(h: HistoryHandoff): string {
+export function buildConsolidatePrompt(h: HistoryHandoff, inv?: InventoryHandoff): string {
   const lines = [
-    `${REFLECT_PREFIX}、LEARNINGS.md・会話履歴・指示ファイル・スキル・README を見直し、置き直しの案を出してください。`,
+    `${REFLECT_PREFIX}、LEARNINGS.md・会話履歴・指示ファイル・スキル・設計書・README を見直し、置き直しの案を出してください。`,
   ]
+  if (inv !== undefined) {
+    const growth = inv.baseline !== undefined ? `前回の統合の直後 ${inv.baseline} 件から ${inv.observations - inv.baseline >= 0 ? '+' : ''}${inv.observations - inv.baseline} 件` : '前回の統合の直後の件数は記録なし'
+    lines.push(`設定: 整理後の生の観察の目標 ${inv.target} 件・古い観察は最後の観測から ${inv.staleDays} 日超。今は ${inv.observations} 件（${growth}）。`)
+    if (inv.path !== undefined) {
+      const ref = inv.referenced !== undefined ? `反映済みかもしれない観察 ${inv.referenced} 件` : '反映済みの手がかりは grep できなかった'
+      lines.push(`棚卸しの材料: ${inv.path}（古い観察 ${inv.stale} 件・${ref}）`)
+    }
+  }
   if (h.kind === 'digest') {
     const notes = [
       h.deferred > 0 ? `上限のため、これより後の発言 ${h.deferred} 件は次の反映に回す` : '',

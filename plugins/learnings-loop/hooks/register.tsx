@@ -8,7 +8,7 @@ import type { EngineInterface, FsEntry, ModelUsage, PluginOptions, Register, Ren
 
 import type { Candidate, DropReason } from './candidates'
 import { makeJudge, runExtraction, type ExtractOptions } from './extract'
-import { commitOnly, commonDir, hasChanges, worktreeRoots } from './git'
+import { commitOnly, commonDir, grepFixed, hasChanges, worktreeRoots } from './git'
 import {
   buildDigest,
   DEFAULT_WINDOW_MS,
@@ -34,7 +34,8 @@ import {
   removeLine,
   replaceLine,
 } from './learnings-file'
-import { buildConsolidatePrompt, REFLECT_PREFIX, type HistoryHandoff } from './prompts'
+import { buildInventory, inventoryKeywords } from './inventory'
+import { buildConsolidatePrompt, REFLECT_PREFIX, type HistoryHandoff, type InventoryHandoff } from './prompts'
 import { formatStatus } from './status'
 import {
   addDiscarded,
@@ -89,6 +90,8 @@ type Options = {
   noticeDays: number
   injectPrinciples: boolean
   observationChars: number
+  staleDays: number
+  targetCount: number
   offerInit: boolean
   maxChars: number
   judgeModel: string
@@ -106,6 +109,8 @@ function readOptions(o: PluginOptions): Options {
     noticeDays: num(o.noticeDays, 7),
     injectPrinciples: bool(o.injectPrinciples, true),
     observationChars: num(o.observationChars, 3000),
+    staleDays: num(o.staleDays, 30),
+    targetCount: num(o.targetCount, 40),
     offerInit: bool(o.offerInit, true),
     maxChars: num(o.maxChars, 200),
     judgeModel: str(o.judgeModel, 'haiku'),
@@ -175,13 +180,15 @@ function principlesBlock(file: string): string {
   ]
   // 原則になる前の学びも渡す。原則だけだと、同じことが2回起きて反映されるまで何も効かない
   if (observationsText !== '') {
-    lines.push('## 生の観察', '原則にまとめる前の学び。当てはまる作業では、同じ失敗を繰り返さないように使う。', observationsText, '')
+    lines.push('## 生の観察', '原則にまとめる前の学び（セッション開始時点の抜粋）。当てはまる作業では、同じ失敗を繰り返さないように使う。', observationsText, '')
   }
+  // 件数はセッション開始時点のもの。プロンプトのキャッシュを壊さないように読み直さないので、時点を書いておく
+  // （同じセッションで反映すると、ファイルの今の件数とずれる）
   const rest = observationsAtStart - observationsShown
   if (observationsShown === 0 && rest > 0) {
-    lines.push(`生の観察 ${rest} 件が \`${file}\` にある。関係しそうな作業の前に grep して参照せよ。`)
+    lines.push(`セッション開始時点で、生の観察 ${rest} 件が \`${file}\` にあった。関係しそうな作業の前に grep して参照せよ。`)
   } else if (rest > 0) {
-    lines.push(`ここにない ${rest} 件は \`${file}\` にある。関係しそうな作業の前に grep して参照せよ。`)
+    lines.push(`セッション開始時点で、ここにない生の観察 ${rest} 件が \`${file}\` にあった。関係しそうな作業の前に grep して参照せよ。`)
   }
   lines.push(
     '学びの記録は learnings-loop が自動で行う。明示的に頼まれない限り、自分で LEARNINGS.md に追記しない。',
@@ -620,11 +627,50 @@ async function reflect($: EngineInterface): Promise<void> {
     reflectTurnId = undefined
     isReflectSubmitted = true
     const history = await collectHistory($).catch((err): HistoryHandoff => ({ kind: 'none', reason: String(err) }))
-    await $.prompt.submit({ text: buildConsolidatePrompt(history) })
+    const inventory = await collectInventory($).catch(err => {
+      $.ui.log(`inventory: ${String(err)}`, { to: 'debug' })
+      return undefined
+    })
+    await $.prompt.submit({ text: buildConsolidatePrompt(history, inventory) })
   } catch (err) {
     isReflectSubmitted = false
     await update($, noticeAtom, n => ({ ...n, isReflecting: false }))
     throw err
+  }
+}
+
+/**
+ * 棚卸しの材料（件数・目標・古い観察・キーワードが LEARNINGS.md の外に出てくる観察）を .git の中に書く。
+ * 何を消す・移すかはスキルが決める。Git の共通ディレクトリが分からなければ、数だけ返す
+ */
+async function collectInventory($: EngineInterface): Promise<InventoryHandoff | undefined> {
+  const s = await read($, sessionAtom)
+  if (s.file === null) return undefined
+  const text = await readFile($, s.file)
+  if (text === undefined || !parse(text).ok) return undefined
+  const today = localDate(await $.clock.now())
+  const common = s.repoKey?.replace(/[\\/]+$/, '')
+  const isGit = common !== undefined && /[\\/]\.git$/.test(common)
+  const hits = isGit ? await grepFixed((argv, init) => $.process.run(argv, init), dirOf(s.file), inventoryKeywords(text)) : undefined
+  const inv = buildInventory({ text, today, staleDays: options.staleDays, targetCount: options.targetCount, hits })
+  let path: string | undefined
+  if (isGit) {
+    path = `${common}/learnings-loop/inventory.md`
+    try {
+      await $.fs.write(path, inv.text)
+    } catch (err) {
+      $.ui.log(`inventory: ${String(err)}`, { to: 'debug' })
+      path = undefined
+    }
+  }
+  return {
+    path,
+    observations: inv.observations,
+    target: inv.target,
+    baseline: inv.baseline,
+    staleDays: options.staleDays,
+    stale: inv.stale,
+    referenced: inv.referenced,
   }
 }
 

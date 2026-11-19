@@ -128,6 +128,44 @@ export function observations(text: string): Observation[] {
   return out
 }
 
+/** その観察を最後に見た日: 再観測の印の「最終」、なければ行頭の日付。どちらもなければ undefined */
+export function lastSeen(line: string): string | undefined {
+  return reobserved(line)?.last ?? /^- (\d{4}-\d{2}-\d{2})/.exec(line)?.[1]
+}
+
+export type StaleObservation = Observation & { lastSeen: string; age: number }
+
+/** 最後に見てから days 日を超えた生の観察。日付の読めない行は入れない */
+export function staleObservations(text: string, today: string, days: number): StaleObservation[] {
+  const out: StaleObservation[] = []
+  for (const o of observations(text)) {
+    const seen = lastSeen(o.line)
+    const age = seen !== undefined ? daysBetween(today, seen) : undefined
+    if (seen !== undefined && age !== undefined && age > days) out.push({ ...o, lastSeen: seen, age })
+  }
+  return out
+}
+
+/** 冒頭コメントの `最終統合: YYYY-MM-DD（統合後の観察 N件）` の N。なければ undefined */
+export function consolidatedCount(text: string): number | undefined {
+  const m = /最終統合[:：]\s*\d{4}-\d{2}-\d{2}\s*[（(]統合後の観察\s*(\d+)\s*件[）)]/.exec(text)
+  return m?.[1] !== undefined ? Number(m[1]) : undefined
+}
+
+/**
+ * 観察の本文から、同じことがコード・docs・設定にもう書かれていないかを探す手がかり。
+ * バッククォートで囲んだ4字以上の語（関数名・設定名・エラー文など）だけを使う
+ */
+export function referenceKeywords(line: string): string[] {
+  const body = withoutReobserved(line).replace(/^- \d{4}-\d{2}-\d{2}[:：]\s*/, '')
+  const out: string[] = []
+  for (const m of body.matchAll(/`([^`\n]+)`/g)) {
+    const k = (m[1] ?? '').trim()
+    if (k.length >= 4 && !out.includes(k)) out.push(k)
+  }
+  return out
+}
+
 export type ObservationDigest = { text: string; shown: number }
 
 /**

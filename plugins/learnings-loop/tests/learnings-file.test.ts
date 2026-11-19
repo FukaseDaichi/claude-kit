@@ -2,20 +2,24 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   appendLine,
+  consolidatedCount,
   countObservations,
   daysBetween,
   hasLine,
   hash,
   isLearningsPath,
   lastConsolidated,
+  lastSeen,
   parse,
   observationDigest,
   observations,
   principles,
   removeLine,
   reobserve,
+  referenceKeywords,
   reobserved,
   replaceLine,
+  staleObservations,
   withoutReobserved,
 } from '../hooks/learnings-file'
 
@@ -244,5 +248,57 @@ describe('isLearningsPath', () => {
     expect(isLearningsPath('/x/LEARNINGS.md')).toBe(true)
     expect(isLearningsPath('LEARNINGS.md')).toBe(true)
     expect(isLearningsPath('/x/NOT_LEARNINGS.md')).toBe(false)
+  })
+})
+
+describe('lastSeen / staleObservations', () => {
+  test('the last sighting is the re-observation date, else the date at the head of the line', async () => {
+    expect(lastSeen('- 2026-09-01: A（再観測 2回・最終 2026-11-01）')).toBe('2026-11-01')
+    expect(lastSeen('- 2026-09-01: A')).toBe('2026-09-01')
+    expect(lastSeen('- 日付なし')).toBeUndefined()
+  })
+
+  test('lists observations not seen for more than the given days, in every section, but never principles', async () => {
+    const text = [
+      '## Patterns That Work',
+      '- 2026-09-01: 古いA',
+      '- 2026-09-01: 古いが再観測されたB（再観測 1回・最終 2026-11-10）',
+      '- 日付のないC',
+      '## Mistakes to Avoid',
+      '- 2026-10-20: ちょうど30日のD',
+      '## Domain Knowledge',
+      '## Open Questions',
+      '- 2026-08-01: 古い疑問E',
+      '## Consolidated Principles',
+      '- 2026-01-01: 原則F',
+    ].join('\n')
+    const stale = staleObservations(text, '2026-11-19', 30)
+    expect(stale.map(o => o.line)).toEqual(['- 2026-09-01: 古いA', '- 2026-08-01: 古い疑問E'])
+    expect(stale[0]?.age).toBe(79)
+    expect(stale[0]?.lastSeen).toBe('2026-09-01')
+    expect(stale[1]?.section).toBe('Open Questions')
+    expect(staleObservations(text, '2026-11-19', 365)).toEqual([])
+  })
+})
+
+describe('consolidatedCount', () => {
+  test('reads the count left by the last consolidation, next to its date', async () => {
+    expect(consolidatedCount('<!--\n- 最終統合: 2026-11-19（統合後の観察 21件）\n-->')).toBe(21)
+    expect(consolidatedCount('- 最終統合：2026-11-19 (統合後の観察 3 件)')).toBe(3)
+    expect(lastConsolidated('- 最終統合: 2026-11-19（統合後の観察 21件）')).toBe('2026-11-19')
+  })
+
+  test('without a count (older files, or never consolidated) it is undefined', async () => {
+    expect(consolidatedCount('- 最終統合: 2026-11-19')).toBeUndefined()
+    expect(consolidatedCount('- 最終統合: （未実施）')).toBeUndefined()
+    expect(consolidatedCount(SAMPLE)).toBeUndefined()
+  })
+})
+
+describe('referenceKeywords', () => {
+  test('takes back-quoted words of four characters or more, once each, outside the date and the mark', async () => {
+    const line = '- 2026-11-01: `git grep` で `principlesBlock` を探す。`ls` は短い。`principlesBlock` は1回（再観測 1回・最終 2026-11-02）'
+    expect(referenceKeywords(line)).toEqual(['git grep', 'principlesBlock'])
+    expect(referenceKeywords('- 2026-11-01: 手がかりのない観察')).toEqual([])
   })
 })

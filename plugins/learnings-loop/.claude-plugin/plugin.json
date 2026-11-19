@@ -1,5 +1,6 @@
 {
   "name": "learnings-loop",
+  "version": "1.1.0",
   "description": "LEARNINGS.md の学びを、編集やエラーのあったターンの直後に裏で抽出して自動追記する Mod。帯のボタンで追記内容を見たり、学びと会話履歴をもとに原則・指示ファイル・スキルを整理したりできる。",
   "author": {
     "name": "FukaseDaichi"
@@ -39,6 +40,18 @@
       "title": "統合の案内: 日数しきい値",
       "description": "最終統合からこの日数を超えたら、同じように案内する。",
       "default": 7
+    },
+    "targetCount": {
+      "type": "number",
+      "title": "統合: 整理後の観察の目標件数",
+      "description": "「学びを反映」で、生の観察をこの件数以下に減らすことを目指す。超えているときは、移す・消す案を優先して出す。",
+      "default": 40
+    },
+    "staleDays": {
+      "type": "number",
+      "title": "統合: 古い観察の日数",
+      "description": "最後の観測（再観測の印の最終日、なければ記録した日）からこの日数を超えた観察を、「学びを反映」で移すか消すかの候補にする。",
+      "default": 30
     },
     "injectPrinciples": {
       "type": "boolean",

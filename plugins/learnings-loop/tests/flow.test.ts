@@ -3,6 +3,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { FsEntry, On } from 'claude-code'
 
+import { grepArgs } from '../hooks/git'
+
 const ROOT = '/repo'
 const FILE = `${ROOT}/LEARNINGS.md`
 const TEMPLATE = '/plugin/templates/LEARNINGS.md'
@@ -57,6 +59,8 @@ type World = {
   forks: string[]
   completes: { model: string; prompt: string }[]
   git: Record<string, string>
+  /** true なら git grep が失敗する（終了コード 128） */
+  grepFails: boolean
   runs: string[]
   /** 会話に出した行（$.ui.log） */
   logs: string[]
@@ -90,6 +94,7 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     forks: [],
     completes: [],
     git: init.git ?? {},
+    grepFails: false,
     runs: [],
     logs: [],
     toasts: [],
@@ -146,6 +151,9 @@ function world(on: On, init: Partial<World> & { forkReply?: () => string; judgeR
     const key = e.argv.slice(1).join(' ')
     w.runs.push(key)
     const out = w.git[key]
+    if (w.grepFails && e.argv[1] === 'grep') {
+      return { value: { exitCode: 128, stdout: '', stderr: 'fatal', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     return { value: { exitCode: out === undefined ? 1 : 0, stdout: out ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -220,7 +228,7 @@ test('observations that do not fit are left in the file, and Claude is told to g
   const text = composed.sections.find(s => s.id === 'learnings-loop:principles')?.text ?? ''
   expect(text).toContain('- 2026-10-09: 既存のB')
   expect(text).not.toContain('既存のA')
-  expect(text).toContain('ここにない 1 件は `/repo/LEARNINGS.md` にある')
+  expect(text).toContain('セッション開始時点で、ここにない生の観察 1 件が `/repo/LEARNINGS.md` にあった')
   expect(text).toContain('grep')
 })
 
@@ -235,7 +243,7 @@ test('with the observation limit at 0, only the principles are injected', { opti
   const text = composed.sections.find(s => s.id === 'learnings-loop:principles')?.text ?? ''
   expect(text).toContain('原則1')
   expect(text).not.toContain('既存のA')
-  expect(text).toContain('生の観察 1 件が `/repo/LEARNINGS.md` にある')
+  expect(text).toContain('セッション開始時点で、生の観察 1 件が `/repo/LEARNINGS.md` にあった')
 })
 
 test('an edit turn triggers a fork, a judge and one appended line', async ($, on) => {
@@ -1157,4 +1165,47 @@ test('when no history folder matches this repository, the prompt falls back to t
 
   expect(r.prompts[0]).toContain('Grep')
   expect(r.prompts[0]).not.toContain('前回以降の発言なし')
+})
+
+// ---- 学びを反映: 棚卸しの材料 ------------------------------------------------------
+
+const INVENTORY = '/repo/.git/learnings-loop/inventory.md'
+
+test('reflect writes an inventory of stale and maybe-reflected observations and passes the target and counts', { options: { staleDays: 10, targetCount: 1 } }, async ($, on) => {
+  const file = INITIAL.replace('- 最終統合: 2026-10-01', '- 最終統合: 2026-10-01（統合後の観察 1件）').replace(
+    '- 2026-10-02: 既存のA',
+    '- 2026-10-02: 既存のA\n- 2026-10-20: `fooBar` は二重に呼ばない',
+  )
+  const w = world(on, {
+    files: new Map([[FILE, file]]),
+    git: { ...HISTORY_GIT, [grepArgs(['fooBar']).join(' ')]: 'src/a.ts\0fooBar\nsrc/a.ts\0fooBar\n' },
+  })
+  const r = await startReflecting($, on)
+
+  await r.press()
+
+  expect(r.prompts.length).toBe(1)
+  expect(r.prompts[0]).toContain('目標 1 件')
+  expect(r.prompts[0]).toContain('10 日超')
+  expect(r.prompts[0]).toContain('今は 2 件（前回の統合の直後 1 件から +1 件）')
+  expect(r.prompts[0]).toContain(`棚卸しの材料: ${INVENTORY}（古い観察 1 件・反映済みかもしれない観察 1 件）`)
+  const inv = w.files.get(INVENTORY) ?? ''
+  expect(inv).toContain('- 2026-10-02: 既存のA  ← 20 日前')
+  expect(inv).toContain('`fooBar` → src/a.ts')
+  // LEARNINGS.md 自身は grep の対象にしない
+  expect(w.runs.find(k => k.startsWith('grep '))).toContain(':(top,exclude,glob)**/LEARNINGS.md')
+  // LEARNINGS.md は書き換えない（消す・移すはスキルが決める）
+  expect(w.files.get(FILE)).toBe(file)
+})
+
+test('when git grep fails, the inventory says it could not search instead of finding nothing', async ($, on) => {
+  const file = INITIAL.replace('- 2026-10-02: 既存のA', '- 2026-10-02: `fooBar` を使う')
+  const w = world(on, { files: new Map([[FILE, file]]), git: HISTORY_GIT })
+  w.grepFails = true
+  const r = await startReflecting($, on)
+
+  await r.press()
+
+  expect(r.prompts[0]).toContain('反映済みの手がかりは grep できなかった')
+  expect(w.files.get(INVENTORY) ?? '').toContain('git grep を実行できなかった')
 })
